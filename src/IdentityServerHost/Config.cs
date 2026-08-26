@@ -16,8 +16,27 @@ public static class Config
         new IdentityResources.Profile()
     ];
 
-    // No APIs to protect yet.
-    public static IEnumerable<ApiScope> ApiScopes => [];
+    // The one API this IdentityServer protects: SampleApi. "api1" is both the scope a client asks for
+    // and (via the ApiResource below) the "aud" claim SampleApi checks on every incoming token.
+    public static IEnumerable<ApiScope> ApiScopes =>
+    [
+        new ApiScope("api1", "Sample API access")
+    ];
+
+    // Without an ApiResource, Duende issues access tokens with no "aud" claim at all — SampleApi would
+    // have nothing to check. This is what makes "api1" the audience, not just a scope name.
+    // UserClaims here is what puts "name"/"email" INTO THE ACCESS TOKEN itself — by default an access
+    // token carries only protocol claims (sub, scope, client_id, ...), not the identity-resource claims
+    // that ended up in the ID token via "profile". An API and an ID token don't automatically see the
+    // same claims; each has to ask for what it needs.
+    public static IEnumerable<ApiResource> ApiResources =>
+    [
+        new ApiResource("api1", "Mini IdG Sample API")
+        {
+            Scopes = { "api1" },
+            UserClaims = { "name", "email" }
+        }
+    ];
 
     public static IEnumerable<Client> Clients =>
     [
@@ -36,7 +55,12 @@ public static class Config
             RedirectUris = { "http://localhost:5002/signin-oidc" },
             PostLogoutRedirectUris = { "http://localhost:5002/signout-callback-oidc" },
 
-            AllowedScopes = { IdentityServerConstants.StandardScopes.OpenId, IdentityServerConstants.StandardScopes.Profile }
+            AllowedScopes =
+            {
+                IdentityServerConstants.StandardScopes.OpenId,
+                IdentityServerConstants.StandardScopes.Profile,
+                "api1"
+            }
         }
     ];
 }

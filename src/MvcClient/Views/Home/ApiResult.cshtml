@@ -1,0 +1,13 @@
+@model string
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>Mini IdG — API Response</title></head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 4rem auto;">
+  <h2>Response from SampleApi</h2>
+  <p>This is the raw response from <code>GET http://localhost:5003/api/identity</code>, called with this
+     app's access token as a <code>Bearer</code> header.</p>
+  <pre style="background: #f4f4f4; border: 1px solid #ddd; padding: 1rem; overflow-x: auto;">@Model</pre>
+  <p><a href="/Home/Secure">Back to the secure page</a></p>
+</body>
+</html>

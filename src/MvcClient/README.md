@@ -73,10 +73,49 @@ attribute — which is the *entire* mechanism that triggers a login: no session 
 means no `ClaimsPrincipal`, which means the `oidc` challenge scheme fires and redirects
 the browser to IdentityServerHost's `/connect/authorize`.
 
+## Calling the API
+
+The secure page has a **Call the API** button. It hits `HomeController.CallApi()`,
+which calls [`../SampleApi`](../SampleApi) — a separate process on a separate port —
+using the *same* access token this app got from IdentityServerHost during login:
+
+```csharp
+[Authorize]
+public async Task<IActionResult> CallApi()
+{
+    var accessToken = await HttpContext.GetTokenAsync("access_token");
+
+    var client = httpClientFactory.CreateClient("SampleApi");
+    var request = new HttpRequestMessage(HttpMethod.Get, "/api/identity");
+    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+    var response = await client.SendAsync(request);
+    // ...
+}
+```
+
+Three things make this work, none of them SampleApi-specific magic:
+
+1. **`options.Scope.Add("api1")`** in `Program.cs` — asking for this scope during login
+   is what puts an access token *good for calling SampleApi* into the token response in
+   the first place. Without it, `SaveTokens` still stores *an* access token, but it
+   won't carry the `api1` scope SampleApi's policy requires — the call would get a
+   `401`.
+2. **`options.SaveTokens = true`** — already there from Phase 2, for a different reason
+   (showing tokens on the secure page). It's the same setting that makes
+   `HttpContext.GetTokenAsync("access_token")` return anything at all here.
+3. **`builder.Services.AddHttpClient("SampleApi", ...)`** — a named `HttpClient`
+   pointed at `http://localhost:5003`. This app never validates the token itself; it
+   just attaches it as a `Bearer` header and lets SampleApi do that work independently.
+
+This is the same pattern the real IdG's clients use to call the real IdG's protected
+APIs — a client that already has a user's access token from login reuses it, rather
+than asking for a *new* token per downstream call.
+
 ## Running it
 
 See [`../IdentityServerHost/README.md`](../IdentityServerHost/README.md#running-it) —
-both apps need to be running together for either to make sense on its own.
+all three projects need to be running together for any of them to make sense on its own.
 
 Quick version:
 
@@ -86,7 +125,13 @@ cd ../IdentityServerHost && dotnet run
 
 # terminal 2
 cd . && dotnet run --urls http://localhost:5002
+
+# terminal 3
+cd ../SampleApi && dotnet run --urls http://localhost:5003
 ```
 
-Then browse to `http://localhost:5002`, click *Go to the secure page*, and sign in as
-`alice` / `alice` or `bob` / `bob`.
+Then browse to `http://localhost:5002`, click *Go to the secure page*, sign in as
+`alice` / `alice` or `bob` / `bob`, and click *Call the API*.
+
+Prefer not to click through a browser? [`test-api.ps1`](../../test-api.ps1) (repo root)
+drives the same login + API call over raw HTTP.

@@ -190,9 +190,79 @@ bugs, things worth understanding about how OIDC actually works over the wire.
    the token exchange. The alternative is `AlwaysIncludeUserClaimsInIdToken = true` on
    the `Client` — fewer round trips, bigger tokens whether the claims get used or not.
 
+---
+
+## SampleApi — protecting an API with the same tokens
+
+Everything so far has been about the *issuer* side: this server produces tokens, and
+MvcClient consumes one to establish a login. [`../SampleApi`](../SampleApi) adds the
+third role in the triangle — a **resource server** that receives one of those tokens
+from MvcClient (not from a fresh login of its own) and independently decides whether to
+trust it. See `SampleApi`'s own README for how it validates a token; this section covers
+what changed here to make that possible.
+
+### `Config.cs` — an `ApiScope` and an `ApiResource`
+
+```csharp
+public static IEnumerable<ApiScope> ApiScopes =>
+[
+    new ApiScope("api1", "Sample API access")
+];
+
+public static IEnumerable<ApiResource> ApiResources =>
+[
+    new ApiResource("api1", "Mini IdG Sample API")
+    {
+        Scopes = { "api1" },
+        UserClaims = { "name", "email" }
+    }
+];
+```
+
+- **`ApiScope("api1", ...)`** is what a client (`mvcclient`, below) asks for in
+  `AllowedScopes`/`Scope` to get a token usable against SampleApi.
+- **`ApiResource("api1", ...)`** is what turns that scope name into the token's `aud`
+  (audience) claim. Without an `ApiResource`, Duende issues access tokens with **no**
+  `aud` claim at all — there'd be nothing for an API's `ValidAudience` check to compare
+  against. This is a common early-Duende-adopter trap: adding only an `ApiScope` and
+  wondering why the API rejects every token.
+- **`UserClaims = { "name", "email" }`** — by default an access token carries only
+  protocol claims (`sub`, `scope`, `client_id`, ...), *not* the identity claims that
+  ended up in the ID token via the `profile` scope. An access token and an ID token
+  don't automatically share claims; this list is what copies `name`/`email` onto the
+  access token too, so SampleApi has something more interesting than `sub` to show.
+
+### `Config.cs` — `mvcclient` now asks for `api1`
+
+```csharp
+AllowedScopes =
+{
+    IdentityServerConstants.StandardScopes.OpenId,
+    IdentityServerConstants.StandardScopes.Profile,
+    "api1"
+}
+```
+
+`AllowedScopes` on the `Client` is an allowlist — it says what `mvcclient` is *permitted*
+to request, not what it *does* request. MvcClient's own `Program.cs` has to separately
+add `"api1"` to its `Scope` collection for a token to actually come back with it. Two
+places, two different jobs: IdentityServerHost decides what's allowed; the client
+decides what it asks for on any given login.
+
+### `Program.cs` — one more in-memory store
+
+```csharp
+.AddInMemoryApiScopes(Config.ApiScopes)
+.AddInMemoryApiResources(Config.ApiResources)
+```
+
+Same pattern as every other `.AddInMemory...()` call in this file — a real IdG would
+call `.AddApiResources()`/`.AddApiScopes()` against the same SQL-backed configuration
+store as everything else (Phase 5 territory), not a different mechanism.
+
 ## Running it
 
-1. **Two terminals**
+1. **Three terminals**
 
    ```bash
    # terminal 1
@@ -202,6 +272,10 @@ bugs, things worth understanding about how OIDC actually works over the wire.
    # terminal 2
    cd src/MvcClient
    dotnet run --urls http://localhost:5002
+
+   # terminal 3
+   cd src/SampleApi
+   dotnet run --urls http://localhost:5003
    ```
 
 2. **Browse to `http://localhost:5002`**, click *Go to the secure page*, and sign in as
@@ -209,19 +283,30 @@ bugs, things worth understanding about how OIDC actually works over the wire.
    of every claim in your identity — `sub`, `name`, `email`, `idp`, and the token
    timestamps.
 
-3. **Prefer not to click through a browser?** [`test-phase2.ps1`](../../test-phase2.ps1)
-   (repo root) drives the exact same flow over raw HTTP — useful for re-verifying the
-   sample still works after you change something, and worth reading once as a second
-   trace of the same protocol exchange from a different angle:
+3. **Click *Call the API***. MvcClient forwards its access token to SampleApi as a
+   `Bearer` header; SampleApi validates it independently and echoes back every claim it
+   found — including `aud: api1` and `scope: api1`, proving the audience/scope checks
+   actually ran, not just "some token was present."
+
+4. **Prefer not to click through a browser?**
+   [`test-phase2.ps1`](../../test-phase2.ps1) (repo root) drives the login flow alone
+   over raw HTTP; [`test-api.ps1`](../../test-api.ps1) does the same login and then
+   drives the *Call the API* step too:
 
    ```powershell
    pwsh ./test-phase2.ps1
+   pwsh ./test-api.ps1
    ```
 
 ## What's deliberately missing (and why)
 
-- **A second client, or any API to protect.** `ApiScopes` is still empty — there's
-  nothing behind this login except claims. Protecting an actual API comes later.
+- **Real business data or logic behind the API.** SampleApi has exactly one endpoint
+  that echoes claims — it exists to prove token validation works, not to be a real
+  service. Also see its own README for its list of "deliberately missing."
+- **A second client, or scope-level authorization beyond one policy.** Every client that
+  could ever call SampleApi is `mvcclient`, and the only check is "does this token carry
+  the `api1` scope." Finer-grained authorization (roles, per-tenant policies) isn't
+  needed yet with only one client and one API.
 - **Persistence.** Everything still resets to empty on every restart except
   `tempkey.jwk` (the signing key) — clients, resources, and test users are all in-memory
   C#. A later phase replaces the in-memory stores with a real database.
@@ -239,3 +324,8 @@ man-in-the-middle to exploit, not something a working solo flow will ever surfac
 ask yourself: *"What would a React SPA's client need to look like differently, and why
 can't it use a `ClientSecret`?"* That's exactly where the next lesson (the React client,
 still Phase 2) starts, before Phase 3 (multi-tenancy).
+
+Separately: remove `"name"` from the `ApiResource`'s `UserClaims` and re-run *Call the
+API*. The `email` claim still shows up, `name` doesn't — confirming that each claim
+riding on an access token was put there deliberately, one at a time, not "whatever the
+user has."

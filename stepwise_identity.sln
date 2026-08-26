@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IdentityServerHost", "src\I
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MvcClient", "src\MvcClient\MvcClient.csproj", "{400B7676-2279-44F0-8420-0C76516F4377}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SampleApi", "src\SampleApi\SampleApi.csproj", "{C55F0676-128C-40CE-A115-2DFB89242B22}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -43,6 +45,18 @@ Global
 		{400B7676-2279-44F0-8420-0C76516F4377}.Release|x64.Build.0 = Release|Any CPU
 		{400B7676-2279-44F0-8420-0C76516F4377}.Release|x86.ActiveCfg = Release|Any CPU
 		{400B7676-2279-44F0-8420-0C76516F4377}.Release|x86.Build.0 = Release|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Debug|x64.Build.0 = Debug|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Debug|x86.Build.0 = Debug|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Release|x64.ActiveCfg = Release|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Release|x64.Build.0 = Release|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Release|x86.ActiveCfg = Release|Any CPU
+		{C55F0676-128C-40CE-A115-2DFB89242B22}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -50,5 +64,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{4D162ECD-A53C-414F-9AC4-88535E6B0F25} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{400B7676-2279-44F0-8420-0C76516F4377} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{C55F0676-128C-40CE-A115-2DFB89242B22} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

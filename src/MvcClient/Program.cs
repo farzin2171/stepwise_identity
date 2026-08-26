@@ -2,6 +2,13 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
 
+// Named client for calling SampleApi. HomeController attaches the current user's access token to every
+// request made through this client — see Controllers/HomeController.cs.
+builder.Services.AddHttpClient("SampleApi", client =>
+{
+    client.BaseAddress = new Uri("http://localhost:5003");
+});
+
 builder.Services.AddAuthentication(options =>
        {
            // "cookies" holds this app's own session. "oidc" is only used to *establish* that session — it
@@ -29,6 +36,10 @@ builder.Services.AddAuthentication(options =>
            options.Scope.Clear();
            options.Scope.Add("openid");
            options.Scope.Add("profile");
+           // Asking for this scope is what puts an access token this app is allowed to hand to SampleApi
+           // into the token response — without it, SaveTokens still stores an access token, but SampleApi
+           // rejects it (no "api1" in its scope claims, so the ApiScope policy fails).
+           options.Scope.Add("api1");
 
            // Keeps the id_token/access_token in the auth cookie so the Secure view below can print them.
            options.SaveTokens = true;

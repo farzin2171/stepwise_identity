@@ -14,6 +14,7 @@ builder.Services.AddIdentityServer(options =>
        })
        .AddInMemoryIdentityResources(Config.IdentityResources)
        .AddInMemoryApiScopes(Config.ApiScopes)
+       .AddInMemoryApiResources(Config.ApiResources)
        .AddInMemoryClients(Config.Clients)
        .AddDeveloperSigningCredential()
        // Registers TestUserStore in DI (AccountController takes a dependency on it) and a default
