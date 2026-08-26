@@ -31,8 +31,21 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("ApiScope", policy => policy.RequireClaim("scope", "api1"));
 });
 
+// MvcClient never needed this — it calls this API from a server-to-server HttpClient, not from a
+// browser. ReactSpa calls it with the browser's own fetch(), from a different origin (:5173 vs :5003),
+// which makes this a CORS request: without an explicit allow-list, the browser blocks the preflight
+// before the real GET (with its Authorization header) is ever sent.
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("ReactSpa", policy => policy
+        .WithOrigins("http://localhost:5173")
+        .AllowAnyMethod()
+        .AllowAnyHeader());
+});
+
 var app = builder.Build();
 
+app.UseCors("ReactSpa");
 app.UseAuthentication();
 app.UseAuthorization();
 

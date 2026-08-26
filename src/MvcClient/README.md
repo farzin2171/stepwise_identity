@@ -10,9 +10,9 @@ the flow.
 ## Why "server-side client" matters
 
 This app runs on a server you control, so it can hold a `ClientSecret` the browser never
-sees. That's the whole distinction that will matter again in the next lesson: a React
-SPA runs *in* the browser, can't keep a secret, and needs a different client
-configuration because of it.
+sees. That's the whole distinction [`../ReactSpa`](../ReactSpa) is built to contrast
+with: a React SPA runs *in* the browser, can't keep a secret, and needs a different
+client configuration because of it. See its README for the full comparison.
 
 ## What's in this project
 
@@ -111,6 +111,13 @@ Three things make this work, none of them SampleApi-specific magic:
 This is the same pattern the real IdG's clients use to call the real IdG's protected
 APIs — a client that already has a user's access token from login reuses it, rather
 than asking for a *new* token per downstream call.
+
+[`../ReactSpa`](../ReactSpa) has the same button and calls the same endpoint, but
+notably **doesn't** need `AddHttpClient`, `GetTokenAsync`, or any server-side code at
+all — it just calls `fetch()` directly from the browser with the token already sitting
+in `sessionStorage`. It also needed something this app never did: a CORS policy on
+SampleApi itself, because that call crosses origins (`:5173` → `:5003`) in a way this
+app's server-to-server call never does. See its README for the comparison.
 
 ## Running it
 
