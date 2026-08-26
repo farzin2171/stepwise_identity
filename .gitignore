@@ -11,6 +11,9 @@
 *.sln.docstates
 *.env
 
+# Duende AddDeveloperSigningCredential() throwaway dev signing key — regenerated per machine, never shared
+tempkey.jwk
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 

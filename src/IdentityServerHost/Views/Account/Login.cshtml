@@ -1,0 +1,20 @@
+@model IdentityServerHost.Controllers.LoginViewModel
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>Mini IdG — Login</title></head>
+<body style="font-family: sans-serif; max-width: 320px; margin: 4rem auto;">
+  <h2>Sign in</h2>
+  @if (!ViewData.ModelState.IsValid)
+  {
+    <p style="color: #991b1b;">@ViewData.ModelState.Values.First().Errors.First().ErrorMessage</p>
+  }
+  <form asp-controller="Account" asp-action="Login" method="post">
+    <input type="hidden" name="ReturnUrl" value="@Model.ReturnUrl" />
+    <p><label>Username<br /><input type="text" name="Username" /></label></p>
+    <p><label>Password<br /><input type="password" name="Password" /></label></p>
+    <button type="submit">Login</button>
+  </form>
+  <p style="color: #666; font-size: 0.85rem;">Try <code>alice</code> / <code>alice</code> or <code>bob</code> / <code>bob</code>.</p>
+</body>
+</html>

@@ -1,0 +1,25 @@
+@model IEnumerable<System.Security.Claims.Claim>
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>Mini IdG — Secure Page</title></head>
+<body style="font-family: sans-serif; max-width: 480px; margin: 4rem auto;">
+  <h2>You're signed in</h2>
+  <p>These claims came from the ID token the IdentityServerHost issued:</p>
+  <table border="1" cellpadding="6" style="border-collapse: collapse; width: 100%;">
+    <thead><tr><th align="left">Claim type</th><th align="left">Value</th></tr></thead>
+    <tbody>
+      @foreach (var claim in Model)
+      {
+        <tr><td>@claim.Type</td><td>@claim.Value</td></tr>
+      }
+    </tbody>
+  </table>
+  <p>
+    <a href="/Home/CallApi" style="display: inline-block; padding: 0.5rem 1rem; background: #145; color: #fff; text-decoration: none; border-radius: 4px;">
+      Call the API
+    </a>
+  </p>
+  <p><a href="/Home/Index">Back</a></p>
+</body>
+</html>
