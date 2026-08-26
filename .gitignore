@@ -14,6 +14,11 @@
 # Duende AddDeveloperSigningCredential() throwaway dev signing key — regenerated per machine, never shared
 tempkey.jwk
 
+# ReactSpa (Vite) build output and local env files — node_modules/ is already covered below
+dist/
+dist-ssr/
+*.local
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 

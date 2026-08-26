@@ -7,16 +7,18 @@ actually is under all its production scaffolding.
 
 ```
 1. Foundation ✓
-2. Clients (MVC ← you are here, React next)
-3. Multi-tenancy
+2. Clients ✓ (MVC + React)
+3. Multi-tenancy ← next
 4. External identity providers
 5. Persistence (SQL Server instead of in-memory)
 6. Data ingestion / config tooling
 ```
 
-The sibling project [`../MvcClient`](../MvcClient) is the other half of Phase 2 — an
-application that actually logs a user in against this server. Its own README covers
-what it is; this one covers the IdentityServer side of the same flow.
+The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
+the other half of Phase 2 — two applications, of the two kinds the target architecture
+actually has (a server-side app and a browser-only SPA), that log a user in against this
+server. Their own READMEs cover what each is; this one covers the IdentityServer side of
+both flows.
 
 ## Phase 1 recap — why start with (almost) nothing?
 
@@ -192,6 +194,51 @@ bugs, things worth understanding about how OIDC actually works over the wire.
 
 ---
 
+## ReactSpa — the second client type, and why it looks different
+
+`MvcClient` is a **confidential** client: it runs on a server you control, so it can
+hold a `ClientSecret` the browser never sees. [`../ReactSpa`](../ReactSpa) is the other
+kind the target architecture has — a **public** client, static files a browser
+downloads and runs, with no server of its own to keep a secret on. Same protocol
+(Authorization Code + PKCE), same IdentityServer, same two identity claims at the end —
+but everything *different* about it traces back to that one fact.
+
+### `Config.cs` — the public client
+
+```csharp
+new Client
+{
+    ClientId = "reactspa",
+    RequireClientSecret = false,
+
+    AllowedGrantTypes = GrantTypes.Code,
+    RequirePkce = true,
+
+    RedirectUris = { "http://localhost:5173/callback" },
+    AllowedCorsOrigins = { "http://localhost:5173" },
+
+    AllowedScopes = { IdentityServerConstants.StandardScopes.OpenId, IdentityServerConstants.StandardScopes.Profile, "api1" }
+}
+```
+
+Two fields `mvcclient` never needed:
+
+- **`RequireClientSecret = false`** — there's nothing to authenticate the client itself
+  with, because a public client can't keep anything confidential. PKCE alone protects
+  the authorization code exchange here — for `mvcclient`, PKCE was defense in depth *on
+  top of* a secret; for `reactspa`, it's the only defense that exists.
+- **`AllowedCorsOrigins`** — IdentityServer reads this and wires up CORS for every one
+  of its endpoints automatically. Without it, the browser's preflight `OPTIONS` request
+  to `/connect/token` gets no `Access-Control-Allow-Origin` header back, and the actual
+  `POST` never leaves the browser at all. This is the gotcha every SPA-onboarding
+  conversation about a real IdG runs into first.
+
+See `ReactSpa`'s own README for the full MvcClient-vs-ReactSpa comparison (client type,
+where tokens end up living, who calls `/connect/token`) and for what the React side of
+this looks like.
+
+---
+
 ## SampleApi — protecting an API with the same tokens
 
 Everything so far has been about the *issuer* side: this server produces tokens, and
@@ -232,7 +279,7 @@ public static IEnumerable<ApiResource> ApiResources =>
   don't automatically share claims; this list is what copies `name`/`email` onto the
   access token too, so SampleApi has something more interesting than `sub` to show.
 
-### `Config.cs` — `mvcclient` now asks for `api1`
+### `Config.cs` — both clients now ask for `api1`
 
 ```csharp
 AllowedScopes =
@@ -243,11 +290,13 @@ AllowedScopes =
 }
 ```
 
-`AllowedScopes` on the `Client` is an allowlist — it says what `mvcclient` is *permitted*
-to request, not what it *does* request. MvcClient's own `Program.cs` has to separately
-add `"api1"` to its `Scope` collection for a token to actually come back with it. Two
-places, two different jobs: IdentityServerHost decides what's allowed; the client
-decides what it asks for on any given login.
+`AllowedScopes` on a `Client` is an allowlist — it says what that client is *permitted*
+to request, not what it *does* request. Both `mvcclient`'s `Program.cs` and
+`ReactSpa/src/main.tsx` have to separately add `"api1"` to their own scope list for a
+token to actually come back with it. Two places, two different jobs: IdentityServerHost
+decides what's allowed *per client*; each client decides what it asks for on any given
+login. `reactspa` got this added after the fact, once it grew its own *Call the API*
+button — see `ReactSpa`'s README.
 
 ### `Program.cs` — one more in-memory store
 
@@ -262,7 +311,7 @@ store as everything else (Phase 5 territory), not a different mechanism.
 
 ## Running it
 
-1. **Three terminals**
+1. **Four terminals**
 
    ```bash
    # terminal 1
@@ -276,26 +325,46 @@ store as everything else (Phase 5 territory), not a different mechanism.
    # terminal 3
    cd src/SampleApi
    dotnet run --urls http://localhost:5003
+
+   # terminal 4
+   cd src/ReactSpa
+   npm install   # first time only
+   npm run dev
    ```
 
-2. **Browse to `http://localhost:5002`**, click *Go to the secure page*, and sign in as
-   `alice` / `alice` (or `bob` / `bob`). You'll land back on the secure page with a table
-   of every claim in your identity — `sub`, `name`, `email`, `idp`, and the token
-   timestamps.
+2. **MVC flow** — browse to `http://localhost:5002`, click *Go to the secure page*, and
+   sign in as `alice` / `alice` (or `bob` / `bob`). You'll land back on the secure page
+   with a table of every claim in your identity — `sub`, `name`, `email`, `idp`, and the
+   token timestamps.
 
-3. **Click *Call the API***. MvcClient forwards its access token to SampleApi as a
-   `Bearer` header; SampleApi validates it independently and echoes back every claim it
-   found — including `aud: api1` and `scope: api1`, proving the audience/scope checks
-   actually ran, not just "some token was present."
+3. **Call the API** — from the secure page, click *Call the API*. MvcClient forwards
+   its access token to SampleApi as a `Bearer` header; SampleApi validates it
+   independently and echoes back every claim it found — including `aud: api1` and
+   `scope: api1`, proving the audience/scope checks actually ran, not just "some token
+   was present."
 
-4. **Prefer not to click through a browser?**
-   [`test-phase2.ps1`](../../test-phase2.ps1) (repo root) drives the login flow alone
-   over raw HTTP; [`test-api.ps1`](../../test-api.ps1) does the same login and then
-   drives the *Call the API* step too:
+4. **React SPA flow** — browse to `http://localhost:5173`, click **Log in**, sign in as
+   `alice` / `alice`. You land back on the SPA (not redirected to a different app's
+   page) with the same kind of claims table — this time decoded entirely client-side
+   from a token that never touched a server. Click *Call the API* there too — this time
+   the browser's own `fetch()` calls SampleApi directly across origins (`:5173` →
+   `:5003`), which is why SampleApi now has a CORS policy (see its README).
+
+5. **Prefer not to click through a browser?**
+   [`test-phase2.ps1`](../../test-phase2.ps1) drives the MVC login flow over raw HTTP;
+   [`test-api.ps1`](../../test-api.ps1) does the same login and then drives *Call the
+   API*; [`test-phase2-spa.ps1`](../../test-phase2-spa.ps1) proves the React SPA's
+   IdentityServer-side login configuration (public client, no secret, CORS on
+   `/connect/token`); [`test-spa-api.ps1`](../../test-spa-api.ps1) proves the same for
+   its *Call the API* button (the `api1` scope, and SampleApi's own CORS policy). None
+   of the four drive real browser JavaScript, so steps 2–4 above still need a manual
+   pass at least once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
    pwsh ./test-api.ps1
+   pwsh ./test-phase2-spa.ps1
+   pwsh ./test-spa-api.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -303,29 +372,38 @@ store as everything else (Phase 5 territory), not a different mechanism.
 - **Real business data or logic behind the API.** SampleApi has exactly one endpoint
   that echoes claims — it exists to prove token validation works, not to be a real
   service. Also see its own README for its list of "deliberately missing."
-- **A second client, or scope-level authorization beyond one policy.** Every client that
-  could ever call SampleApi is `mvcclient`, and the only check is "does this token carry
-  the `api1` scope." Finer-grained authorization (roles, per-tenant policies) isn't
-  needed yet with only one client and one API.
+- **Scope-level authorization beyond one policy.** The only check SampleApi makes is
+  "does this token carry the `api1` scope." Finer-grained authorization (roles,
+  per-tenant policies) isn't needed yet with only two clients and one API.
 - **Persistence.** Everything still resets to empty on every restart except
   `tempkey.jwk` (the signing key) — clients, resources, and test users are all in-memory
   C#. A later phase replaces the in-memory stores with a real database.
 - **Multi-tenancy and external IdPs.** Both `alice` and `bob` are plain local accounts
-  with no tenant concept and no external identity provider behind them — that's Phases 3
-  and 4.
+  with no tenant concept and no external identity provider behind them — that's next
+  (Phase 3), then Phase 4.
 - **A license key.** Still fine for local dev forever; still out of scope for this
   learning project.
 
 ## Try it yourself before moving on
 
-Remove `RequirePkce = true` from the client and re-run the flow — does anything visibly
-break? (It won't, for this sample — PKCE closes an interception attack that requires a
-man-in-the-middle to exploit, not something a working solo flow will ever surface.) Then
-ask yourself: *"What would a React SPA's client need to look like differently, and why
-can't it use a `ClientSecret`?"* That's exactly where the next lesson (the React client,
-still Phase 2) starts, before Phase 3 (multi-tenancy).
+Remove `RequirePkce = true` from `mvcclient` and re-run `test-phase2.ps1` — does
+anything visibly break? (It won't, for this sample — PKCE closes an interception attack
+that requires a man-in-the-middle to exploit, not something a working solo flow will
+ever surface.)
 
-Separately: remove `"name"` from the `ApiResource`'s `UserClaims` and re-run *Call the
-API*. The `email` claim still shows up, `name` doesn't — confirming that each claim
-riding on an access token was put there deliberately, one at a time, not "whatever the
-user has."
+Change `RequireClientSecret` back to its default (`true`) on `reactspa` and re-run
+`test-phase2-spa.ps1` — read the error the token endpoint gives you back this time.
+
+Comment out `app.UseCors("ReactSpa")` in `SampleApi/Program.cs`, restart SampleApi, and
+click *Call the API* in a real browser at `http://localhost:5173` — `test-spa-api.ps1`
+would still pass (raw `HttpClient` doesn't enforce CORS the way a browser does), but the
+browser itself will refuse the request. Read what a CORS failure actually looks like in
+dev tools' console — it's a distinct failure mode from a `401`, worth being able to
+recognize on sight.
+
+Remove `"name"` from the `ApiResource`'s `UserClaims` and re-run *Call the API*. The
+`email` claim still shows up, `name` doesn't — confirming that each claim riding on an
+access token was put there deliberately, one at a time, not "whatever the user has."
+
+Then ask yourself: *"What does 'tenant resolution middleware' actually look like in
+code?"* — that's Phase 3.

@@ -9,12 +9,16 @@ token *issuer* (IdentityServerHost) or a token *consumer that logs a human in*
 a logged-in user, using a token that user's login produced.
 
 ```
-Browser  ↔  MvcClient (:5002)  —Bearer token→  SampleApi (:5003)
+Browser  ↔  MvcClient (:5002)  —Bearer token (server-to-server)→  SampleApi (:5003)
+Browser  ↔  ReactSpa (:5173)   —Bearer token (browser fetch())──→  SampleApi (:5003)
                   ↑                                    ↑
              logs the user in                  never talks to IdentityServerHost
              against IdentityServerHost        directly — only downloads its public
              (Authorization Code + PKCE)        signing key once, on first request
 ```
+
+Two callers, same endpoint, same validation — but they reach SampleApi differently, and
+that difference is why this project needs a CORS policy at all (see below).
 
 ## `Program.cs` — two lines to protect an API
 
@@ -82,11 +86,43 @@ automatically share claims; each side has to ask for what it needs. That's what
 `IdentityServerHost/Config.cs` does — it tells Duende "when a token is issued for
 `api1`, also copy these claims onto it, if the user granted the scopes that carry them."
 
+## CORS — needed for ReactSpa, not for MvcClient
+
+```csharp
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("ReactSpa", policy => policy
+        .WithOrigins("http://localhost:5173")
+        .AllowAnyMethod()
+        .AllowAnyHeader());
+});
+// ...
+app.UseCors("ReactSpa");
+```
+
+MvcClient calls this API from server-side C# code — an `HttpClient` running inside the
+ASP.NET Core process, not inside a browser. The browser's same-origin policy (and CORS,
+which relaxes it) is a browser-enforced rule; server-to-server calls were never subject
+to it. ReactSpa calls this API with the browser's own `fetch()`, from a *different
+origin* (`localhost:5173` calling `localhost:5003`), which makes every request subject
+to CORS. Without this policy, the browser sends a preflight `OPTIONS` request before the
+real `GET`, gets no `Access-Control-Allow-Origin` header back, and refuses to send the
+real request at all — this API's `[Authorize]`/scope checks never even get a chance to
+run, because the browser stops the request before it's fully sent.
+
+`app.UseCors(...)` has to run before `app.UseAuthentication()`/`app.UseAuthorization()`
+— the preflight `OPTIONS` request carries no `Authorization` header at all (browsers
+never attach one to a preflight), so if CORS ran after authentication, the preflight
+itself would get rejected as unauthenticated before ever reaching the CORS middleware
+that was supposed to approve it.
+
 ## Running it
 
 This project doesn't do anything on its own — see
-[`../MvcClient/README.md`](../MvcClient/README.md#calling-the-api) for how to exercise
-it through a real login. Standalone, you can confirm it refuses anonymous traffic:
+[`../MvcClient/README.md`](../MvcClient/README.md#calling-the-api) and
+[`../ReactSpa/README.md`](../ReactSpa/README.md#calling-the-api) for how to exercise it
+through a real login, from each of the two client types this repo has. Standalone, you
+can confirm it refuses anonymous traffic:
 
 ```bash
 cd src/SampleApi

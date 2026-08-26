@@ -61,6 +61,32 @@ public static class Config
                 IdentityServerConstants.StandardScopes.Profile,
                 "api1"
             }
+        },
+        new Client
+        {
+            ClientId = "reactspa",
+            // The whole reason this client looks different from mvcclient: this app is static files a
+            // browser downloads and runs. There is no server to hold a secret on, so there's no secret —
+            // PKCE alone (not secret + PKCE) is what protects its authorization code exchange.
+            RequireClientSecret = false,
+
+            AllowedGrantTypes = GrantTypes.Code,
+            RequirePkce = true,
+
+            RedirectUris = { "http://localhost:5173/callback" },
+            PostLogoutRedirectUris = { "http://localhost:5173" },
+            // The one field mvcclient never needed. Duende reads this and wires up CORS for every one of
+            // its endpoints automatically — without it, the browser's preflight OPTIONS request to
+            // /connect/token gets no Access-Control-Allow-Origin header back, and the real POST never
+            // leaves the browser at all.
+            AllowedCorsOrigins = { "http://localhost:5173" },
+
+            AllowedScopes =
+            {
+                IdentityServerConstants.StandardScopes.OpenId,
+                IdentityServerConstants.StandardScopes.Profile,
+                "api1"
+            }
         }
     ];
 }
