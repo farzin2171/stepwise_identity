@@ -1,40 +1,39 @@
-# IdentityServerHost — Phase 1: Foundation
+# IdentityServerHost
 
-This is the first step of a mini "Identity Gateway" built from scratch, one phase at a
-time, so that each phase is a small, runnable slice of what a real OAuth/OIDC
-authorization server (like Equisoft's `Applications.IdentityGateway`) actually is under
-all its production scaffolding.
-
-Phase 1's job is the smallest possible thing that is still, honestly, an OAuth
-authorization server: no clients, no login UI, no database. Just the engine.
+This is the authorization server half of a mini "Identity Gateway" built from scratch,
+one phase at a time, so that each phase is a small, runnable slice of what a real
+OAuth/OIDC authorization server (like Equisoft's `Applications.IdentityGateway`)
+actually is under all its production scaffolding.
 
 ```
-1. Foundation  ← you are here
-2. Clients (MVC + React apps that actually log in)
+1. Foundation ✓
+2. Clients (MVC ← you are here, React next)
 3. Multi-tenancy
 4. External identity providers
 5. Persistence (SQL Server instead of in-memory)
 6. Data ingestion / config tooling
 ```
 
-## Why start with (almost) nothing?
+The sibling project [`../MvcClient`](../MvcClient) is the other half of Phase 2 — an
+application that actually logs a user in against this server. Its own README covers
+what it is; this one covers the IdentityServer side of the same flow.
+
+## Phase 1 recap — why start with (almost) nothing?
 
 A real `Startup.cs` wires `AddIdentityServer()` in the middle of a much bigger pipeline —
 SAML2, data protection, audit logging, metrics, message queues, health checks, resilient
 HTTP clients, and more — all built around six phases like the ones above. None of that
-scaffolding changes what IdentityServer actually *is*. This phase strips everything else
+scaffolding changes what IdentityServer actually *is*. Phase 1 stripped everything else
 away so the load-bearing part is visible on its own:
 
 > **IdentityServer is middleware.** One call registers its services. One call adds it to
 > the request pipeline.
 
-Everything you'll add in later phases (login pages, multi-tenant resolution, external
+Everything added from Phase 2 onward (login pages, multi-tenant resolution, external
 IdP federation, real databases) is a *customization* layered on top of those two calls —
 not a prerequisite for them.
 
-## What's in this project
-
-### `Config.cs`
+### `Config.cs` — the shape of configuration
 
 ```csharp
 public static class Config
@@ -47,129 +46,196 @@ public static class Config
 
     public static IEnumerable<ApiScope> ApiScopes => [];
 
-    public static IEnumerable<Client> Clients => [];
+    public static IEnumerable<Client> Clients => [ /* see Phase 2 below */ ];
 }
 ```
 
-This is the *shape* of an IdentityServer configuration without any real data in it yet:
-
-- **`IdentityResources`** — these map to OIDC scopes that describe *who the user is*.
-  `OpenId` is the mandatory `openid` scope every OIDC request needs. `Profile` is the
-  standard `profile` scope (name, picture, etc.).
-- **`ApiScopes`** — these would describe *APIs* this server protects (e.g. `orders.read`).
-  There are none yet — nothing to protect until Phase 2+.
-- **`Clients`** — these would describe *applications allowed to ask this server for
-  tokens* (a web app, a SPA, a service). There are none yet, which is deliberate — see
-  "What's deliberately missing" below.
+- **`IdentityResources`** map to OIDC scopes that describe *who the user is*. `OpenId` is
+  the mandatory `openid` scope every OIDC request needs. `Profile` is the standard
+  `profile` scope (name, picture, etc.).
+- **`ApiScopes`** describe *APIs* this server protects (e.g. `orders.read`). Still empty
+  — nothing to protect until a later phase.
+- **`Clients`** describe *applications allowed to ask this server for tokens*. Phase 1
+  left this empty on purpose; Phase 2 adds the first one.
 
 In a real IdG, these three lists aren't a static C# class — they're rows in SQL Server,
-seeded from JSON config files through a data-ingestion tool (that's Phase 6 territory).
-But the *objects* are exactly the same types:
-`Duende.IdentityServer.Models.IdentityResource`, `ApiScope`, and `Client` don't know or
-care whether they came from memory or a database. That's the whole point of Duende's
-store abstraction — swapping Phase 1's in-memory stores for SQL Server later (Phase 5)
-won't change this file's shape at all, only *where it's read from*.
+seeded from JSON config files through a data-ingestion tool (Phase 6 territory). But the
+*objects* are exactly the same types: `Duende.IdentityServer.Models.IdentityResource`,
+`ApiScope`, and `Client` don't know or care whether they came from memory or a database.
+That's the whole point of Duende's store abstraction.
 
-### `Program.cs`
-
-```csharp
-builder.Services.AddIdentityServer(options =>
-       {
-           options.KeyManagement.Enabled = false;
-       })
-       .AddInMemoryIdentityResources(Config.IdentityResources)
-       .AddInMemoryApiScopes(Config.ApiScopes)
-       .AddInMemoryClients(Config.Clients)
-       .AddDeveloperSigningCredential();
-
-var app = builder.Build();
-
-app.UseIdentityServer();
-
-app.Run();
-```
-
-Two calls do all the real work:
+### `Program.cs` — the two calls that matter
 
 - **`AddIdentityServer(...)`** registers IdentityServer's services in the DI container —
-  token validators, response generators, and the in-memory stores you just configured
-  via the `.AddInMemory...()` chain.
+  token validators, response generators, and the stores you configure via
+  `.AddInMemory...()`.
 - **`UseIdentityServer()`** adds IdentityServer's middleware to the HTTP request
   pipeline. This is what actually answers requests to
   `/.well-known/openid-configuration`, `/connect/authorize`, `/connect/token`, and every
-  other OIDC/OAuth endpoint. You never write these endpoints yourself — Duende generates
-  all of them from your configuration.
+  other OIDC/OAuth endpoint. You never write these endpoints yourself.
 
-Two details worth calling out:
+`AddDeveloperSigningCredential()` is the one line with no production equivalent — it
+writes a throwaway RSA signing key to disk (`tempkey.jwk`, gitignored) and reuses it on
+subsequent runs. A real IdG calls `AddCertificates()` instead, loading a real
+certificate from a key vault.
 
-- **`options.KeyManagement.Enabled = false`** — by default, Duende manages (auto-rotates)
-  signing keys for you. We turn that off here because we're supplying our own throwaway
-  key with `AddDeveloperSigningCredential()` instead, and don't want the two to conflict.
-- **`AddDeveloperSigningCredential()`** is the one line in this file with *no* production
-  equivalent. It writes a throwaway RSA signing key to disk (`tempkey.jwk`, created next
-  to the project on first run) and reuses it on subsequent runs. A real IdG calls
-  `AddCertificates()` instead, which loads an actual certificate from a key vault. We'll
-  swap this out in a later phase, once there's a reason to want token signatures that
-  survive more than local dev.
+---
+
+## Phase 2 — the first client, and the login page it needed
+
+Phase 1 built an IdentityServer with nothing to authenticate *to*: zero clients means
+every real OAuth flow rejects every request, because there's no `client_id` that could
+ever be valid. Phase 2 gives it exactly one client — `MvcClient`, a server-side ASP.NET
+Core MVC app — and traces one real, complete **Authorization Code + PKCE** flow through
+both applications.
+
+```
+Browser  ↔  MvcClient (:5002)  —code + PKCE→  IdentityServerHost (:5000)
+```
+
+**MvcClient is a "server-side client"** — it runs on a server you control, so it can
+hold a `ClientSecret` the browser never sees. That distinction matters again in the next
+phase: a React SPA runs *in* the browser, can't keep a secret, and needs a different
+client configuration because of it.
+
+### `Config.cs` — the new client
+
+```csharp
+new Client
+{
+    ClientId = "mvcclient",
+    ClientSecrets = { new Secret("secret".Sha256()) },
+
+    AllowedGrantTypes = GrantTypes.Code,
+    RequirePkce = true,
+    RequireConsent = false,
+
+    RedirectUris = { "http://localhost:5002/signin-oidc" },
+    PostLogoutRedirectUris = { "http://localhost:5002/signout-callback-oidc" },
+
+    AllowedScopes = { IdentityServerConstants.StandardScopes.OpenId, IdentityServerConstants.StandardScopes.Profile }
+}
+```
+
+`RequirePkce = true` even though this client has a secret. PKCE was designed for
+*public* clients that can't authenticate themselves — but it also closes a second,
+unrelated hole (authorization-code interception on the redirect back to the client) that
+affects confidential clients too. Duende — and the real IdG — require it on every client
+unconditionally. There's no `RedirectUris` wildcard and no dynamic registration: this
+list is exactly one URL, matching the real IdG's philosophy that redirect URIs are a
+security boundary, not a convenience setting.
+
+### The login page IdentityServer needed
+
+Duende IdentityServer ships zero UI. `IIdentityServerInteractionService` is the seam:
+when a `/connect/authorize` request can't be completed (no session yet), IdentityServer
+redirects to whatever URL `options.UserInteraction.LoginUrl` points at (default:
+`/Account/Login`) and trusts your application code to authenticate the user and call
+back in. That's what `Controllers/AccountController.cs`, `TestUsers.cs`, and
+`Views/Account/Login.cshtml` are for:
+
+```csharp
+if (users.ValidateCredentials(model.Username, model.Password))
+{
+    await HttpContext.SignInAsync(new IdentityServerUser(user.SubjectId)
+    {
+        DisplayName = user.Username,
+        IdentityProvider = IdentityServerConstants.LocalIdentityProvider
+    });
+
+    // Resumes the /connect/authorize request that redirected here in the first place —
+    // signing in above didn't finish the OIDC flow, it just made this redirect valid.
+    if (Url.IsLocalUrl(model.ReturnUrl)) return Redirect(model.ReturnUrl);
+    return Redirect("~/");
+}
+```
+
+`TestUserStore` and `TestUser` are Duende's own quickstart types — a real password check
+against a hard-coded list (`alice`/`alice`, `bob`/`bob`), wired up by
+`.AddTestUsers(TestUsers.Users)` in `Program.cs`. **The real IdG has no code path like
+this at all** — no local password login exists there; every login goes to an external
+IdP (that's Phase 4). This local-password UI is scaffolding this course needs and the
+real system doesn't.
+
+### Three things that broke, and why they're worth knowing
+
+These are real wire-level behaviors, reproduced by actually running this sample — not
+bugs, things worth understanding about how OIDC actually works over the wire.
+
+1. **"Correlation failed" — `SameSite=None` requires `Secure`, which requires HTTPS.**
+   The OIDC handler's correlation and nonce cookies default to `SameSite=None` because
+   IdentityServer's callback is a cross-origin `POST` back into the app (see #2) — and
+   every modern browser refuses a `SameSite=None` cookie that isn't also marked
+   `Secure`. This sample runs both apps over plain HTTP, so a `Secure` cookie set on the
+   way out never came back on the way in, and login failed before it reached the login
+   page's credential check. **Fix:** relax both `CorrelationCookie` and `NonceCookie` (on
+   the MvcClient side) — and IdentityServer's own cookies (`ConfigureAll<CookieAuthenticationOptions>`
+   in `Program.cs`, IdentityServerHost side) — to `SameSite=Lax`. Safe specifically
+   because `localhost:5000` and `localhost:5002` are *same-site* (SameSite is defined by
+   scheme + registrable domain, not port). A real deployment with the IdG and its
+   clients on different domains would need real HTTPS instead of this relaxation —
+   there'd be no substitute.
+2. **`response_mode=form_post` is the library default, and it's a real cross-origin
+   POST.** ASP.NET Core's OpenIdConnect handler defaults to `form_post`: IdentityServer's
+   authorize *callback* response is an HTML page containing a self-submitting
+   `<form method="post">` that JavaScript fires onload, POSTing the code and state to
+   `/signin-oidc`. The alternative, `response_mode=query`, would put the same code in a
+   URL — sitting in browser history and any `Referer` header the next page load sends.
+   `form_post` avoids that at the cost of needing JavaScript to complete the round trip.
+3. **`profile` in scope ≠ profile claims in the ID token.** For the code flow, Duende
+   puts only `sub` and a few protocol-required claims into the ID token — it expects a
+   confidential client to fetch the rest itself. `Alice Anderson` doesn't show up on the
+   secure page until `options.GetClaimsFromUserInfoEndpoint = true` is set on the
+   MvcClient's OIDC options, triggering an automatic call to `/connect/userinfo` after
+   the token exchange. The alternative is `AlwaysIncludeUserClaimsInIdToken = true` on
+   the `Client` — fewer round trips, bigger tokens whether the claims get used or not.
 
 ## Running it
 
-1. **Start the host**
+1. **Two terminals**
 
    ```bash
+   # terminal 1
    cd src/IdentityServerHost
    dotnet run
+
+   # terminal 2
+   cd src/MvcClient
+   dotnet run --urls http://localhost:5002
    ```
 
-   You should see `Now listening on: http://localhost:5000`, plus a warning that you have
-   no Duende license key. **That warning is expected and harmless for local dev** — a
-   real IdG throws a hard startup error without a license key in Production (a
-   deliberate safety net that's out of scope for this learning project).
+2. **Browse to `http://localhost:5002`**, click *Go to the secure page*, and sign in as
+   `alice` / `alice` (or `bob` / `bob`). You'll land back on the secure page with a table
+   of every claim in your identity — `sub`, `name`, `email`, `idp`, and the token
+   timestamps.
 
-2. **Fetch the discovery document**
+3. **Prefer not to click through a browser?** [`test-phase2.ps1`](../../test-phase2.ps1)
+   (repo root) drives the exact same flow over raw HTTP — useful for re-verifying the
+   sample still works after you change something, and worth reading once as a second
+   trace of the same protocol exchange from a different angle:
 
-   ```bash
-   curl http://localhost:5000/.well-known/openid-configuration
+   ```powershell
+   pwsh ./test-phase2.ps1
    ```
-
-   Look at `"scopes_supported"`. You should see `["openid", "profile", "offline_access"]`.
-   The first two come from `Config.IdentityResources` above. `offline_access` is built
-   into Duende IdentityServer itself — it's how refresh tokens get requested, regardless
-   of what you configure. Every endpoint URL, every supported grant type and response
-   type in this document was generated for you from the single `AddIdentityServer()` call
-   — you didn't write any of it.
-
-3. **Fetch the signing key**
-
-   ```bash
-   curl http://localhost:5000/.well-known/openid-configuration/jwks
-   ```
-
-   This is the *public* half of the throwaway key `AddDeveloperSigningCredential()`
-   generated. Every access token and ID token this server will ever issue gets signed
-   with the *private* half; any relying party validates that signature against this
-   public key. Stop the host, delete `tempkey.jwk`, and run it again — the `kid` value
-   changes, because a fresh key gets generated whenever there isn't one on disk already.
 
 ## What's deliberately missing (and why)
 
-- **Any client.** With zero entries in `Config.Clients`, every real OAuth flow
-  (`/connect/authorize`, `/connect/token`) will reject every request — there's no
-  `client_id` that could ever be valid. Adding the first client is exactly where
-  **Phase 2** starts.
-- **A login UI.** Duende IdentityServer ships no UI of its own — the login page is
-  application code *you* write. There's nothing to log in *to* yet (no client asking for
-  a login), so there's no UI yet either.
-- **Persistence.** Everything above resets to empty on every restart (except the signing
-  key, which persists in `tempkey.jwk`). A later phase replaces the in-memory stores with
-  a real database.
-- **A license key.** Fine for local dev forever. Duende requires (and a real IdG
-  enforces) a paid license key in production — that's a licensing/ops concern, not an
-  architecture one, so it's out of scope here.
+- **A second client, or any API to protect.** `ApiScopes` is still empty — there's
+  nothing behind this login except claims. Protecting an actual API comes later.
+- **Persistence.** Everything still resets to empty on every restart except
+  `tempkey.jwk` (the signing key) — clients, resources, and test users are all in-memory
+  C#. A later phase replaces the in-memory stores with a real database.
+- **Multi-tenancy and external IdPs.** Both `alice` and `bob` are plain local accounts
+  with no tenant concept and no external identity provider behind them — that's Phases 3
+  and 4.
+- **A license key.** Still fine for local dev forever; still out of scope for this
+  learning project.
 
 ## Try it yourself before moving on
 
-Add `new IdentityResources.Email()` to `Config.IdentityResources` and re-check the
-discovery document — try to predict what changes before you look. Then ask yourself:
-*"What's the smallest client I could add to make `/connect/authorize` actually work?"*
-That question is exactly where Phase 2 starts.
+Remove `RequirePkce = true` from the client and re-run the flow — does anything visibly
+break? (It won't, for this sample — PKCE closes an interception attack that requires a
+man-in-the-middle to exploit, not something a working solo flow will ever surface.) Then
+ask yourself: *"What would a React SPA's client need to look like differently, and why
+can't it use a `ClientSecret`?"* That's exactly where the next lesson (the React client,
+still Phase 2) starts, before Phase 3 (multi-tenancy).
