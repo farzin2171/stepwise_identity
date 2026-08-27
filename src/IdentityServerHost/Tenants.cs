@@ -15,6 +15,22 @@ public static class Tenants
         ["globex"] = "Globex Corporation"
     };
 
+    // Real-IdG counterpart: a per-client Properties[tenantName] entry holding a comma-list of allowed
+    // scheme names (AuthenticationHelper.GetAllAvailableIdentityProviders). Modeled per-tenant here
+    // instead of per-client, since this sample only has one client family asking for external login.
+    // Acme federates to the partner ExternalIdp; Globex has no external IdP configured at all and only
+    // ever sees the local login form — the login page differs by tenant, not just by branding.
+    public static IReadOnlyDictionary<string, string[]> AllowedExternalSchemes => new Dictionary<string, string[]>
+    {
+        ["acme"] = ["external-idp"],
+        ["globex"] = []
+    };
+
+    public static IReadOnlyDictionary<string, string> SchemeDisplayNames => new Dictionary<string, string>
+    {
+        ["external-idp"] = "ExternalIdp (partner SSO)"
+    };
+
     // Finds the IdG's acr_values=tenant:<name> hint inside a URL's own query string, or (if the URL is a
     // login page's ReturnUrl) inside the original request it has re-encoded. Handles both
     // /connect/authorize?acr_values=... directly and /Account/Login?ReturnUrl=....

@@ -5,6 +5,18 @@
 <body style="font-family: sans-serif; max-width: 480px; margin: 4rem auto;">
   <h2>Mini IdG — Sample MVC Client</h2>
   <p>This page is public — no login required to see it.</p>
-  <p><a href="/Home/Secure">Go to the secure page</a> (this will trigger a login).</p>
+  <p><a href="/Home/Secure">Go to the secure page</a> (this will trigger a login with no tenant hint).</p>
+  <p>
+    Or log in as a specific tenant (sets <code>acr_values=tenant:&lt;name&gt;</code> before
+    redirecting — see <code>HomeController.LoginAsTenant()</code>):
+  </p>
+  <p>
+    <a href="/Home/LoginAsTenant?tenant=acme">Log in as Acme Corp</a>
+    (try <code>alice</code>/<code>alice</code>, or the ExternalIdp button)
+  </p>
+  <p>
+    <a href="/Home/LoginAsTenant?tenant=globex">Log in as Globex Corporation</a>
+    (try <code>bob</code>/<code>bob</code> — or try <code>alice</code>/<code>alice</code> here to see the rejection)
+  </p>
 </body>
 </html>

@@ -1,3 +1,6 @@
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
@@ -33,6 +36,17 @@ builder.Services.AddAuthentication(options =>
            // everywhere — never disable this in real code.
            options.RequireHttpsMetadata = false;
 
+           // Duende's discovery document advertises a pushed_authorization_request_endpoint, and this
+           // handler's default (UseIfAvailable) switches to PAR automatically whenever that's true: the
+           // real authorize parameters get POSTed to /connect/par on a back channel, and the browser
+           // only ever sees "?request_uri=urn:...&client_id=...". That's invisible-by-design for a real
+           // deployment, but it also means acr_values (see OnRedirectToIdentityProvider below) never
+           // appears on the URL for TenantResolutionMiddleware's raw query-string parsing to find —
+           // discovered by actually clicking "Log in as Acme" and watching tenant resolution silently
+           // fail. Disabling PAR here keeps the classic, fully-visible query-string authorize redirect
+           // this sample's simplified tenant resolution is built around.
+           options.PushedAuthorizationBehavior = PushedAuthorizationBehavior.Disable;
+
            options.Scope.Clear();
            options.Scope.Add("openid");
            options.Scope.Add("profile");
@@ -40,6 +54,11 @@ builder.Services.AddAuthentication(options =>
            // into the token response — without it, SaveTokens still stores an access token, but SampleApi
            // rejects it (no "api1" in its scope claims, so the ApiScope policy fails).
            options.Scope.Add("api1");
+           // Without this, tenant_id would never show up on the claims table even for a request that
+           // sets acr_values=tenant:acme — IdentityServerHost enforces the tenant match either way, but
+           // it only PUTS the claim on the token if a client asked for the "tenant" scope. See
+           // HomeController.LoginAsTenant() for where acr_values actually gets set.
+           options.Scope.Add("tenant");
 
            // Keeps the id_token/access_token in the auth cookie so the Secure view below can print them.
            options.SaveTokens = true;
@@ -52,6 +71,14 @@ builder.Services.AddAuthentication(options =>
 
            options.MapInboundClaims = false;
 
+           // The OIDC handler only merges userinfo claims it has a ClaimAction for — a pre-populated
+           // allowlist covering standard OIDC claims (name, email, ...), silently dropping anything
+           // else. "tenant_id" isn't standard, so without this line the userinfo endpoint would return
+           // it (confirmed by calling /connect/userinfo directly) while this app's own claims table
+           // never showed it — found by actually clicking "Log in as Acme" and noticing tenant_id was
+           // missing even though the raw HTTP flow proved the server-side claim was there.
+           options.ClaimActions.MapUniqueJsonKey("tenant_id", "tenant_id");
+
            // The correlation and nonce cookies default to SameSite=None (required because the IdP's
            // form_post callback is a cross-origin POST back to this app) which in turn requires Secure —
            // i.e. HTTPS only. This sample runs both apps over plain HTTP, so Secure cookies would never be
@@ -63,6 +90,23 @@ builder.Services.AddAuthentication(options =>
            options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
            options.NonceCookie.SameSite = SameSiteMode.Lax;
            options.NonceCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+
+           // The OIDC handler has no built-in "AcrValues" challenge property in this version — the
+           // supported way to add a parameter the handler doesn't know about is this event, which runs
+           // right before the redirect to IdentityServerHost is issued. See
+           // HomeController.LoginAsTenant() for where the "acr_values" item actually gets set.
+           options.Events = new OpenIdConnectEvents
+           {
+               OnRedirectToIdentityProvider = context =>
+               {
+                   if (context.Properties.Items.TryGetValue("acr_values", out var acrValues) && acrValues is not null)
+                   {
+                       context.ProtocolMessage.AcrValues = acrValues;
+                   }
+
+                   return Task.CompletedTask;
+               }
+           };
        });
 
 var app = builder.Build();

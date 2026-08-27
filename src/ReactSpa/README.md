@@ -232,6 +232,13 @@ working end to end.
   the way to add this — see IdentityServerHost's README for the full write-up and
   [`test-phase3.ps1`](../../test-phase3.ps1) for a scripted proof the server-side
   enforcement already works.
+- **Ever reaching ExternalIdp's login page for real.** IdentityServerHost can now
+  federate Acme's users to [`../ExternalIdp`](../ExternalIdp) — but this app needs zero
+  code changes to benefit from that (it only ever talks to IdentityServerHost's own
+  `/connect/authorize`). To actually *see* the external option, this app would first
+  need to send `acr_values=tenant:acme` (the point above), since Duende has to know a
+  tenant to know which external schemes to offer. [`test-phase4.ps1`](../../test-phase4.ps1)
+  proves the whole federated round trip works over raw HTTP in the meantime.
 
 ## Try it yourself before moving on
 

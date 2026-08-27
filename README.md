@@ -10,8 +10,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 1. Foundation ✓
 2. Clients ✓ (MVC + React)
 3. Multi-tenancy ✓
-4. External identity providers ← next
-5. Persistence (SQL Server instead of in-memory)
+4. External identity providers ✓
+5. Persistence (SQL Server instead of in-memory) ← next
 6. Data ingestion / config tooling
 ```
 
@@ -25,6 +25,11 @@ A mini Identity Gateway, built from scratch in phases that mirror
 - [src/SampleApi](src/SampleApi) — a JWT-Bearer-protected API that both MvcClient and
   ReactSpa call on the signed-in user's behalf, using the access token from login. See
   its [README](src/SampleApi/README.md).
+- [src/ExternalIdp](src/ExternalIdp) — a second, independent Duende IdentityServer that
+  IdentityServerHost federates to (Acme's users only) as of Phase 4. See its
+  [README](src/ExternalIdp/README.md). Want to wire in a real Microsoft Entra ID or
+  Azure AD B2C tenant instead of this toy one? See
+  [src/IdentityServerHost/docs/azure-entra-b2c-setup.md](src/IdentityServerHost/docs/azure-entra-b2c-setup.md).
 
 Verification scripts (repo root):
 
@@ -38,8 +43,12 @@ Verification scripts (repo root):
 - [`test-phase3.ps1`](test-phase3.ps1) — proves tenant resolution: matching
   tenant/user succeeds with the right `tenant_id` claim, a mismatched tenant is
   rejected, and a login with no tenant hint at all still works.
+- [`test-phase4.ps1`](test-phase4.ps1) — proves per-tenant external IdP federation:
+  Globex sees no external sign-in option, Acme does and can complete a real federated
+  login through ExternalIdp (a separate server), ending with `name` from ExternalIdp and
+  `tenant_id` from the original request.
 
-None of the five drive real browser JavaScript — see
+None of the six drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 

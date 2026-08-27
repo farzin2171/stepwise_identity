@@ -1,0 +1,21 @@
+@model ExternalIdp.Controllers.LoginViewModel
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>ExternalIdp — Login</title></head>
+<body style="font-family: sans-serif; max-width: 320px; margin: 4rem auto; background: #eef6ff;">
+  <h2>Sign in to ExternalIdp</h2>
+  <p style="font-size: 0.8rem; color: #666;">(a separate identity provider — not part of mini-idg)</p>
+  @if (!ViewData.ModelState.IsValid)
+  {
+    <p style="color: #991b1b;">Invalid username or password</p>
+  }
+  <form asp-controller="Account" asp-action="Login" method="post">
+    <input type="hidden" name="ReturnUrl" value="@Model.ReturnUrl" />
+    <p><label>Username<br /><input type="text" name="Username" /></label></p>
+    <p><label>Password<br /><input type="password" name="Password" /></label></p>
+    <button type="submit">Login</button>
+  </form>
+  <p style="color: #666; font-size: 0.85rem;">Try <code>carol</code> / <code>carol</code>.</p>
+</body>
+</html>
