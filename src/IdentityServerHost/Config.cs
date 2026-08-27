@@ -13,7 +13,11 @@ public static class Config
     public static IEnumerable<IdentityResource> IdentityResources =>
     [
         new IdentityResources.OpenId(),
-        new IdentityResources.Profile()
+        new IdentityResources.Profile(),
+        // Opt-in, unlike the real IdG: EquisoftTokenResponseGenerator stamps tenantId into every token
+        // unconditionally there. Here, a client has to ask for "tenant" like any other scope — see
+        // Tenants.cs for why this sample simplifies three real-system components into one.
+        new IdentityResource { Name = "tenant", DisplayName = "Tenant", UserClaims = { "tenant_id" } }
     ];
 
     // The one API this IdentityServer protects: SampleApi. "api1" is both the scope a client asks for
@@ -59,7 +63,8 @@ public static class Config
             {
                 IdentityServerConstants.StandardScopes.OpenId,
                 IdentityServerConstants.StandardScopes.Profile,
-                "api1"
+                "api1",
+                "tenant"
             }
         },
         new Client
@@ -85,7 +90,8 @@ public static class Config
             {
                 IdentityServerConstants.StandardScopes.OpenId,
                 IdentityServerConstants.StandardScopes.Profile,
-                "api1"
+                "api1",
+                "tenant"
             }
         }
     ];
