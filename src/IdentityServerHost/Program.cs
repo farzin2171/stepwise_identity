@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 // can't be completed silently. Nothing before Phase 2 needed a UI, because nothing before Phase 2 could
 // reach a state where IdentityServer had to ask a human anything.
 builder.Services.AddControllersWithViews();
+builder.Services.AddScoped<TenantContext>();
 
 builder.Services.AddIdentityServer(options =>
        {
@@ -35,6 +36,11 @@ var app = builder.Build();
 
 app.UseStaticFiles();
 app.UseRouting();
+
+// After routing (so it only runs for requests that will actually be handled) and before IdentityServer
+// itself, so both /connect/authorize and /Account/Login see a populated TenantContext by the time their
+// handlers run.
+app.UseMiddleware<TenantResolutionMiddleware>();
 
 // UseIdentityServer() calls UseAuthentication() internally — order matters, and this is IdentityServer's
 // own documented order: routing, then IdentityServer, then authorization, then endpoints.

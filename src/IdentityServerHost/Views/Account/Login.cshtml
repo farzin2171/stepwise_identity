@@ -4,7 +4,7 @@
 <html>
 <head><title>Mini IdG — Login</title></head>
 <body style="font-family: sans-serif; max-width: 320px; margin: 4rem auto;">
-  <h2>Sign in</h2>
+  <h2>Sign in@(Model.TenantDisplayName is not null ? $" to {Model.TenantDisplayName}" : "")</h2>
   @if (!ViewData.ModelState.IsValid)
   {
     <p style="color: #991b1b;">@ViewData.ModelState.Values.First().Errors.First().ErrorMessage</p>
@@ -15,6 +15,9 @@
     <p><label>Password<br /><input type="password" name="Password" /></label></p>
     <button type="submit">Login</button>
   </form>
-  <p style="color: #666; font-size: 0.85rem;">Try <code>alice</code> / <code>alice</code> or <code>bob</code> / <code>bob</code>.</p>
+  <p style="color: #666; font-size: 0.85rem;">
+    Try <code>alice</code> / <code>alice</code> (Acme Corp) or <code>bob</code> / <code>bob</code>
+    (Globex Corporation).
+  </p>
 </body>
 </html>

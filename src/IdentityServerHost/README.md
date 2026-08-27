@@ -8,8 +8,8 @@ actually is under all its production scaffolding.
 ```
 1. Foundation ✓
 2. Clients ✓ (MVC + React)
-3. Multi-tenancy ← next
-4. External identity providers
+3. Multi-tenancy ✓
+4. External identity providers ← next
 5. Persistence (SQL Server instead of in-memory)
 6. Data ingestion / config tooling
 ```
@@ -309,6 +309,113 @@ Same pattern as every other `.AddInMemory...()` call in this file — a real IdG
 call `.AddApiResources()`/`.AddApiScopes()` against the same SQL-backed configuration
 store as everything else (Phase 5 territory), not a different mechanism.
 
+---
+
+## Phase 3 — tenant resolution
+
+Every login so far has been "some user, some client" — nothing has cared *which
+organization* that user belongs to. Phase 3 adds a second dimension: `alice` belongs to
+Acme Corp, `bob` belongs to Globex Corporation, and a login can now say up front which
+tenant it's for — and get rejected if the credentials that come back don't match.
+
+### The signal: `acr_values=tenant:<name>`
+
+The real IdG's own code documents this convention in a log message
+(`AuthenticationHelper.cs`): *"Make sure that the request has the parameter 'acr_values'
+set with property 'tenant:name_of_tenant'."* `acr_values` is a standard OIDC request
+parameter (Authentication Context Class Reference, normally used to request a
+particular authentication strength) that Duende additionally special-cases a
+`tenant:`-prefixed entry inside. Nothing about a client's *static* configuration says
+"this request is for Acme" — that has to arrive with the request, because the same
+client (`reactspa`, `mvcclient`) can serve users from either tenant.
+
+### Where this sample simplifies
+
+Your instinct might be to look for "the tenant resolution component" in the real IdG.
+There isn't one — tenant gets re-derived independently in at least three places there.
+Building an actual middleware here is a deliberate simplification, not a mirror:
+
+| Question | Real IdG | This sample |
+|---|---|---|
+| Which IdPs/branding to show at login? | `AuthenticationHelper.GetAllAvailableIdentityProviders` reads `context.Tenant` + a per-client `Properties[tenantName]` entry | `TenantResolutionMiddleware` populates `TenantContext`, read by `AccountController` |
+| Does an authenticated user's tenant match what was requested? | `EquisoftAuthorizeInteractionResponseGenerator`, at **token-issuance** time — forces re-login unless tenants are configured as `LinkedTenants` | `AccountController.Login`, at **credential-submission** time — a hard reject, no linking concept |
+| What tenant does an external-IdP scheme belong to? | `ITenantAccessor` — scheme name → `EcosystemTenant` config value | N/A — no external IdP yet (Phase 4) |
+| What gets stamped into the token? | `EquisoftTokenResponseGenerator` stamps `tenantId` into **every** token, unconditionally | An opt-in `tenant` scope — a client has to ask for it |
+
+Three components, three different signals (a scheme name, an acr value, a claim),
+collapsed into one middleware and one scope here. Fair trade for a teaching sample — the
+concept is visible in one place — but this code is not something you could lift into
+the real IdG's PR queue.
+
+### `Tenants.cs`, `TenantContext.cs`, `TenantResolutionMiddleware.cs`
+
+```csharp
+public async Task InvokeAsync(HttpContext context, TenantContext tenantContext)
+{
+    var tenantKey = Tenants.ResolveTenantKey(context.Request.GetEncodedPathAndQuery());
+    if (tenantKey is not null)
+    {
+        tenantContext.TenantKey = tenantKey;
+        tenantContext.DisplayName = Tenants.DisplayNames[tenantKey];
+    }
+    await next(context);
+}
+```
+
+The one wrinkle `Tenants.ResolveTenantKey` has to handle: `acr_values` is a direct query
+parameter on `/connect/authorize`, but by the time IdentityServer has redirected to
+`/Account/Login?ReturnUrl=...`, it isn't a top-level parameter anymore — Duende
+re-encodes the *entire original request* inside `ReturnUrl` and hands that to the login
+page instead. `ResolveTenantKey` checks both shapes, which is exactly what the real
+`AuthenticationHelper` gets for free by asking
+`IIdentityServerInteractionService.GetAuthorizationContextAsync(returnUrl)` instead of
+parsing raw query strings — a real API this sample deliberately avoids so the underlying
+convention stays visible.
+
+`TenantResolutionMiddleware` runs after `UseRouting()` (so it only fires for requests
+that will actually be handled) and before `UseIdentityServer()`, so both
+`/connect/authorize` and `/Account/Login` see a populated `TenantContext` by the time
+their handlers run. `TenantContext` itself is registered `AddScoped<TenantContext>()` —
+one instance per request, written once by the middleware, read later by
+`AccountController` in the same request.
+
+### Enforcement — `AccountController.cs`
+
+```csharp
+var requiredTenant = Tenants.ResolveTenantKey(model.ReturnUrl);
+var usersTenant = user.Claims.FirstOrDefault(c => c.Type == "tenant_id")?.Value;
+if (requiredTenant is not null && usersTenant != requiredTenant)
+{
+    ModelState.AddModelError(string.Empty,
+        $"{model.Username} does not belong to {Tenants.DisplayNames[requiredTenant]}.");
+    return View(...);
+}
+```
+
+Alice belongs to Acme. If a request arrives with `acr_values=tenant:globex` and Alice
+types her correct password, she's still rejected — right password, wrong tenant. This
+is the concrete version of the real system's mismatch check; the real one runs later
+(after signing in, at the point IdentityServer is about to issue a token) and has an
+escape hatch (`LinkedTenants`) this sample doesn't implement.
+
+> **Known real-system caveat, worth carrying forward:** the actual tenant GUID lookup
+> (`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration =
+> DateTimeOffset.MaxValue` — it never expires. A tenant's GUID changing in the source of
+> truth would not be picked up without an app restart. `Tenants.cs` here is a
+> hard-coded dictionary with no cache at all, so the bug can't reproduce in this sample
+> — mentioned so the absence doesn't read as "this sample proves it's fine."
+
+### `Config.cs` — an opt-in `tenant` scope
+
+```csharp
+new IdentityResource { Name = "tenant", DisplayName = "Tenant", UserClaims = { "tenant_id" } }
+```
+
+Added to both `mvcclient`'s and `reactspa`'s `AllowedScopes`. Same pattern as `api1` in
+the SampleApi section above: this is an allowlist, not a request — a client still has
+to put `"tenant"` in its own `Scope`/`scope` list for `tenant_id` to actually show up
+anywhere.
+
 ## Running it
 
 1. **Four terminals**
@@ -350,21 +457,32 @@ store as everything else (Phase 5 territory), not a different mechanism.
    the browser's own `fetch()` calls SampleApi directly across origins (`:5173` →
    `:5003`), which is why SampleApi now has a CORS policy (see its README).
 
-5. **Prefer not to click through a browser?**
+5. **Tenant resolution** — [`test-phase3.ps1`](../../test-phase3.ps1) drives four
+   scenarios end-to-end against `reactspa`: Alice into Acme (succeeds, correct
+   `tenant_id` claim), Alice into Globex (rejected), Bob into Globex (succeeds), and a
+   login with no tenant hint at all (still works — Phase 2 is unaffected). To see it in
+   a browser, you'd need a client that sets `acr_values` on its challenge — neither
+   MvcClient nor ReactSpa does that yet; wiring one up (Microsoft's OIDC handler exposes
+   it via `OpenIdConnectChallengeProperties.AcrValues`) is this phase's practice
+   exercise, not something already done for you.
+
+6. **Prefer not to click through a browser?**
    [`test-phase2.ps1`](../../test-phase2.ps1) drives the MVC login flow over raw HTTP;
    [`test-api.ps1`](../../test-api.ps1) does the same login and then drives *Call the
    API*; [`test-phase2-spa.ps1`](../../test-phase2-spa.ps1) proves the React SPA's
    IdentityServer-side login configuration (public client, no secret, CORS on
    `/connect/token`); [`test-spa-api.ps1`](../../test-spa-api.ps1) proves the same for
-   its *Call the API* button (the `api1` scope, and SampleApi's own CORS policy). None
-   of the four drive real browser JavaScript, so steps 2–4 above still need a manual
-   pass at least once (see `ReactSpa`'s README for why):
+   its *Call the API* button (the `api1` scope, and SampleApi's own CORS policy);
+   [`test-phase3.ps1`](../../test-phase3.ps1) is the tenant-resolution scenarios from
+   step 5. None of the five drive real browser JavaScript, so steps 2–4 above still
+   need a manual pass at least once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
    pwsh ./test-api.ps1
    pwsh ./test-phase2-spa.ps1
    pwsh ./test-spa-api.ps1
+   pwsh ./test-phase3.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -375,12 +493,18 @@ store as everything else (Phase 5 territory), not a different mechanism.
 - **Scope-level authorization beyond one policy.** The only check SampleApi makes is
   "does this token carry the `api1` scope." Finer-grained authorization (roles,
   per-tenant policies) isn't needed yet with only two clients and one API.
+- **`LinkedTenants` or any tenant-linking concept.** A user either matches the requested
+  tenant or is rejected outright — no escape hatch for a user who legitimately belongs
+  to more than one tenant.
+- **A client that actually sets `acr_values`.** Neither MvcClient nor ReactSpa
+  challenges with a tenant hint yet — `test-phase3.ps1` proves the IdentityServer side
+  works by crafting that query parameter directly. Wiring a real client up to do this is
+  the practice exercise for this phase.
 - **Persistence.** Everything still resets to empty on every restart except
-  `tempkey.jwk` (the signing key) — clients, resources, and test users are all in-memory
-  C#. A later phase replaces the in-memory stores with a real database.
-- **Multi-tenancy and external IdPs.** Both `alice` and `bob` are plain local accounts
-  with no tenant concept and no external identity provider behind them — that's next
-  (Phase 3), then Phase 4.
+  `tempkey.jwk` (the signing key) — clients, resources, tenants, and test users are all
+  in-memory C#. A later phase replaces the in-memory stores with a real database.
+- **External IdPs.** No user in this sample logs in through anything but the local
+  password form yet — that's Phase 4, next.
 - **A license key.** Still fine for local dev forever; still out of scope for this
   learning project.
 
@@ -405,5 +529,10 @@ Remove `"name"` from the `ApiResource`'s `UserClaims` and re-run *Call the API*.
 `email` claim still shows up, `name` doesn't — confirming that each claim riding on an
 access token was put there deliberately, one at a time, not "whatever the user has."
 
-Then ask yourself: *"What does 'tenant resolution middleware' actually look like in
-code?"* — that's Phase 3.
+Wire `OpenIdConnectChallengeProperties.AcrValues = "tenant:acme"` into a new action on
+MvcClient's `HomeController` (it's just an extra property on the object passed to
+`Challenge(properties)`), then click through a real mismatch in a browser: hit that
+action while trying to sign in as `bob`. Then ask yourself: *"What would `LinkedTenants`
+actually let two tenants share?"* — that's the escape hatch this sample didn't
+implement, and a reasonable question to have before Phase 4 adds a second way to prove
+who someone is.

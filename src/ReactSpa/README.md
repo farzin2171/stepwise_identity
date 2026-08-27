@@ -224,6 +224,14 @@ working end to end.
 - **Error handling on the API call beyond the happy path.** A real app would handle a
   401 (expired/invalid token) by redirecting back through `signinRedirect()`, not just
   rendering whatever SampleApi sent back.
+- **Sending a tenant hint.** IdentityServerHost can now resolve and enforce a tenant per
+  login (`acr_values=tenant:<name>` — see its README's "Phase 3" section), but this app
+  never sets `acr_values` on its `signinRedirect()` call, so every login here behaves as
+  it always has: `alice` and `bob` both work unconditionally, with no tenant mismatch
+  possible. `oidc-client-ts`'s `signinRedirect({ acr_values: 'tenant:acme' })` would be
+  the way to add this — see IdentityServerHost's README for the full write-up and
+  [`test-phase3.ps1`](../../test-phase3.ps1) for a scripted proof the server-side
+  enforcement already works.
 
 ## Try it yourself before moving on
 
@@ -236,5 +244,9 @@ SampleApi, and click *Call the API* again in a real browser (not `test-spa-api.p
 raw `HttpClient` doesn't enforce CORS the way a browser does, so the script would still
 pass). Open dev tools' console and read the actual error a browser gives you when CORS
 blocks a request — it's different from a 401, and worth being able to recognize on
-sight. Then ask: *"What does 'tenant resolution middleware' actually look like in
-code?"* — that's next.
+sight.
+
+Then try adding `acr_values: 'tenant:acme'` to the `signinRedirect()` call in `App.tsx`
+and logging in as `bob` — you should see the same "does not belong to Acme Corp"
+rejection `test-phase3.ps1` proves over raw HTTP, this time rendered on IdentityServer's
+real login page in your own browser.

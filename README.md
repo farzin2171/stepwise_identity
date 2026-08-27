@@ -9,8 +9,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 ```
 1. Foundation ✓
 2. Clients ✓ (MVC + React)
-3. Multi-tenancy ← next
-4. External identity providers
+3. Multi-tenancy ✓
+4. External identity providers ← next
 5. Persistence (SQL Server instead of in-memory)
 6. Data ingestion / config tooling
 ```
@@ -35,8 +35,11 @@ Verification scripts (repo root):
   login config (public client, no secret, CORS on `/connect/token`) is correct.
 - [`test-spa-api.ps1`](test-spa-api.ps1) — proves the same for ReactSpa's own *Call the
   API* button (the `api1` scope, and SampleApi's CORS policy for the browser origin).
+- [`test-phase3.ps1`](test-phase3.ps1) — proves tenant resolution: matching
+  tenant/user succeeds with the right `tenant_id` claim, a mismatched tenant is
+  rejected, and a login with no tenant hint at all still works.
 
-None of the four drive real browser JavaScript — see
+None of the five drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 

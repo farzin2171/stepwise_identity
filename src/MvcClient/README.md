@@ -142,3 +142,14 @@ Then browse to `http://localhost:5002`, click *Go to the secure page*, sign in a
 
 Prefer not to click through a browser? [`test-api.ps1`](../../test-api.ps1) (repo root)
 drives the same login + API call over raw HTTP.
+
+## About tenant resolution (Phase 3)
+
+IdentityServerHost now resolves and enforces a tenant per login (`acr_values=tenant:
+<name>` — see its README's "Phase 3" section) — but this app doesn't send that
+parameter yet, so every login here behaves exactly as before: no tenant hint, no
+mismatch possible, `bob`/`bob` and `alice`/`alice` both still work unconditionally.
+[`test-phase3.ps1`](../../test-phase3.ps1) (repo root) exercises tenant matching against
+`reactspa` instead, since it needs no client secret to script. Wiring
+`OpenIdConnectChallengeProperties.AcrValues` into a new action here, so this app can
+challenge with a tenant hint too, is that phase's suggested practice exercise.
