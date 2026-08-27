@@ -65,79 +65,55 @@ already have a B2C tenant in production).
 ```powershell
 cd src/IdentityServerHost
 dotnet user-secrets init
-dotnet user-secrets set "EntraId:ClientSecret" "<the secret VALUE from step 1.6>"
+dotnet user-secrets set "ExternalProviders:OpenId:1:ClientSecret" "<the secret VALUE from step 1.6>"
 ```
 
-Then read it in `Program.cs` via `builder.Configuration["EntraId:ClientSecret"]` instead
-of a hardcoded string — the way `external-secret` is hardcoded in this sample's
-`Program.cs` is fine for a **toy** IdP with a throwaway secret; it is not fine for a
-real Entra app registration's secret.
+`user-secrets` overlays the same configuration tree `appsettings.*.json` populates —
+`ExternalProviders:OpenId:1:ClientSecret` means "the `ClientSecret` field of the
+*second* entry (index `1`) in the `OpenId` array," matching whatever position you give
+it in step 3 below. This is the config-driven equivalent of what the "Wiring a real
+external provider" section of
+[`external-providers-configuration.md`](external-providers-configuration.md) calls
+"where secrets go" — the same rule applies here as for `external-idp`'s (throwaway,
+fine-to-commit) secret, just for a real one now.
 
-### 3. Wire it into `Program.cs`
+### 3. Add it to `appsettings.Development.json`
 
-Add a second `.AddOpenIdConnect(...)` call, right alongside the existing `"external-idp"`
-one — same builder, same `AddAuthentication()` chain:
+No `Program.cs` change needed — a second entry in the `OpenId` array is all a new
+provider is:
 
-```csharp
-builder.Services.AddAuthentication()
-       .AddOpenIdConnect("external-idp", options => { /* ...existing ExternalIdp config... */ })
-       .AddOpenIdConnect("entra-acme", options =>
-       {
-           options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
-
-           // Recommended over the "azuread" style Authority ({instance}/{tenant}, no
-           // /v2.0) that pins you to the v1.0 endpoint — see Lesson 53. The v2.0
-           // discovery document gives you preferred_username and is what Microsoft
-           // recommends for new integrations.
-           options.Authority = $"https://login.microsoftonline.com/{builder.Configuration["EntraId:TenantId"]}/v2.0";
-           options.ClientId = builder.Configuration["EntraId:ClientId"]!;
-           options.ClientSecret = builder.Configuration["EntraId:ClientSecret"];
-           options.ResponseType = "code";
-           options.UsePkce = true;
-           options.CallbackPath = "/signin-oidc-entra";
-
-           options.SaveTokens = true; // keeps Entra's tokens in the external cookie, same as MvcClient's pattern
-
-           // Scope constructor already adds "openid" and "profile" — profile is required
-           // to receive "oid" at all (Microsoft's own claims reference says so explicitly).
-           options.Scope.Add("email");
-
-           options.MapInboundClaims = false; // keep claim types exactly as Entra sends them —
-                                              // this is also why you likely WON'T hit the classic
-                                              // "duplicate ClaimTypes.Name holds the email" bug the
-                                              // real IdG's azuread provider works around (Lesson 56):
-                                              // that bug is specific to having inbound claim mapping
-                                              // turned ON, which every OIDC handler in this repo disables.
-
-           options.CorrelationCookie.SameSite = SameSiteMode.Lax;
-           options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-           options.NonceCookie.SameSite = SameSiteMode.Lax;
-           options.NonceCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-       });
+```json
+"ExternalProviders": {
+  "OpenId": [
+    { "Name": "external-idp", "...": "...existing ExternalIdp entry..." },
+    {
+      "Name": "entra-acme",
+      "DisplayName": "Sign in with Microsoft",
+      "EcosystemTenant": "acme",
+      "Authority": "https://login.microsoftonline.com/<tenant-id-from-step-1.5>/v2.0",
+      "ClientId": "<application-client-id-from-step-1.5>",
+      "ClientSecret": "<set via user-secrets, see step 2 — leave this out entirely, don't put a placeholder>",
+      "CallbackPath": "/signin-oidc-entra",
+      "Scopes": ["email"]
+    }
+  ]
+}
 ```
 
-### 4. Gate it by tenant, same as `external-idp`
+The `Authority` above (`.../v2.0`) is the recommended shape — it gives you
+`preferred_username` and other v2.0-only claims, and Microsoft's own guidance is that
+new integrations should target v2.0. The older `{instance}/{tenant}` shape (no
+`/v2.0`) resolves the v1.0 discovery document instead — see *Lesson 53* for why the
+real IdG's two Entra provider types (`azuread` vs. `openidconnect`) differ on exactly
+this point; this sample's single `OpenId` type can point at either shape, you're just
+choosing which one to write into `Authority`.
 
-```csharp
-// Tenants.cs
-public static IReadOnlyDictionary<string, string[]> AllowedExternalSchemes => new Dictionary<string, string[]>
-{
-    ["acme"] = ["external-idp", "entra-acme"],   // Acme now offers a choice of two
-    ["globex"] = []
-};
-
-public static IReadOnlyDictionary<string, string> SchemeDisplayNames => new Dictionary<string, string>
-{
-    ["external-idp"] = "ExternalIdp (partner SSO)",
-    ["entra-acme"] = "Sign in with Microsoft"
-};
-```
-
-Nothing else changes — `ExternalController.Challenge`/`Callback` are already
-scheme-agnostic (the `scheme` route parameter is just whatever string you pass), and
-`Login.cshtml` already loops over `Model.ExternalSchemes` and renders one button per
-entry. This is the exact "add a second external scheme" exercise the Phase 4 lesson
-suggests trying.
+`EcosystemTenant: "acme"` is what makes this show up on Acme's login page:
+`Configurations/Authentication/Helpers/AuthenticationHelper.cs` filters the whole
+provider list by this field, so Acme's login page automatically offers a *choice* of
+two providers with **no code change anywhere** — see
+[`external-providers-configuration.md`](external-providers-configuration.md)'s "How
+tenant gating works now" for the mechanics.
 
 ### 5. What you'll see when it works
 
@@ -189,31 +165,25 @@ the org's own directory already has these people.
 - **Certificates & secrets** → new secret → copy the **Value**.
 - Note your B2C tenant's domain, e.g. `yourtenant.onmicrosoft.com`.
 
-### 4. Wire it into `Program.cs`
+### 4. Add it to `appsettings.Development.json`
 
-```csharp
-.AddOpenIdConnect("b2c-acme", options =>
+```json
 {
-    options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
-
-    // B2C's authority is policy-scoped, unlike Entra ID direct: the user flow name is
-    // part of the URL. Get this from the user flow's own "Run user flow" button in the
-    // portal, which shows you the exact endpoint — don't hand-assemble it from memory.
-    options.Authority = "https://yourtenant.b2clogin.com/yourtenant.onmicrosoft.com/B2C_1_signupsignin/v2.0";
-    options.ClientId = builder.Configuration["B2C:ClientId"]!;
-    options.ClientSecret = builder.Configuration["B2C:ClientSecret"];
-    options.ResponseType = "code";
-    options.UsePkce = true;
-    options.CallbackPath = "/signin-oidc-b2c";
-    options.SaveTokens = true;
-    options.MapInboundClaims = false;
-
-    options.CorrelationCookie.SameSite = SameSiteMode.Lax;
-    options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-    options.NonceCookie.SameSite = SameSiteMode.Lax;
-    options.NonceCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-});
+  "Name": "b2c-acme",
+  "DisplayName": "Sign in with Acme (B2C)",
+  "EcosystemTenant": "acme",
+  "Authority": "https://yourtenant.b2clogin.com/yourtenant.onmicrosoft.com/B2C_1_signupsignin/v2.0",
+  "ClientId": "<application-client-id-from-step-3>",
+  "CallbackPath": "/signin-oidc-b2c"
+}
 ```
+
+(`ClientSecret` set via `dotnet user-secrets`, same as step 2 in Option A — index this
+one by wherever it lands in the `OpenId` array.)
+
+B2C's authority is policy-scoped, unlike Entra ID direct: the user flow name is part of
+the URL. Get the exact value from the user flow's own **Run user flow** button in the
+portal — don't hand-assemble it from memory.
 
 ### 5. The identifier caveat that matters most
 
@@ -232,27 +202,39 @@ what B2C adds."
 
 ## How this differs from the real IdG (read before assuming this generalizes)
 
-This sample wires each external provider as a hardcoded `.AddOpenIdConnect(...)` call in
-`Program.cs`, compiled in. The real IdG instead loads an arbitrary list of providers from
-JSON config (or a database) at startup and calls `AddOpenIdConnect` once per entry in a
-loop — adding a provider there is a config change, not a code change, and (for
-DB-backed providers) requires an app restart to pick up. It also has real-world
-complications this sample's toy `external-idp` never surfaces:
+This sample now loads external providers from `appsettings.*.json` and registers one
+`AddOpenIdConnect(...)` call per entry — see
+[`external-providers-configuration.md`](external-providers-configuration.md) for the
+config shape and code path. That much matches the real IdG's *file-based* provider path
+(`externalproviderssettings.json` → `AddExternalProvidersFromFile`) closely. It still
+diverges in real-world ways this sample's toy `external-idp` never surfaced, and that
+adding Entra/B2C for real would:
 
+- **Only one provider type exists here (`OpenId`).** The real IdG gives Entra ID
+  (`azuread`) and Azure AD B2C (`azureadb2c`) their *own* provider types, each with
+  protocol-specific behavior the generic OIDC type doesn't have — see the "Claim
+  collisions" point below for a concrete example. This sample's single `OpenId` type
+  works for either (as both Options above show), but doesn't replicate that extra
+  behavior. See `external-providers-configuration.md`'s "What's still hardcoded" for
+  what porting `AzureAd`/`AzureAdB2C` as first-class types would take.
 - **Claim collisions.** The real IdG's `azuread` provider type strips a duplicate
   `ClaimTypes.Name` claim (which holds the *email*, not the display name) — a
   consequence of that provider type using inbound claim mapping, which every OIDC
   handler in this repo explicitly disables (`MapInboundClaims = false`). You likely
   won't hit this here, but you should know why, not just that it doesn't happen.
-- **`FederatedConfiguration`.** Needed when a broker (like B2C) hides the real durable
-  identifier, or when the ecosystem keys off a legacy id from *before* migrating to
-  Entra. Not implemented in this sample at all — see Lessons 49–58 for the real
-  mechanics.
-- **Redirect URI is computed, not free-form**, for database-backed real-IdG providers:
-  `{pathPrefix}/{scheme}/signin`. Renaming a scheme there breaks the provider
-  registration in Entra/B2C. This sample's `CallbackPath` is just whatever string you
-  write, so this particular trap doesn't exist here — one more way this sample is
-  simpler than the real thing, not a simplification you should assume carries over.
+- **`FederatedConfiguration` and `ClaimMappings` are modeled but not consumed.** Both
+  exist as settings (`external-providers-configuration.md` explains why), but
+  `ExternalController.Callback()` doesn't act on either yet — needed when a broker
+  (like B2C) hides the real durable identifier, or when the ecosystem keys off a legacy
+  claim name a provider doesn't use natively.
+- **File-based only, eagerly bound at startup — no database.** The real IdG's DB-backed
+  path (providers as rows, loaded lazily via Duende's dynamic-provider feature so a new
+  provider needs no app restart) needs a configuration store first — that's Phase 5.
+- **Redirect URI is computed, not free-form**, for the real IdG's *database-backed*
+  providers specifically: `{pathPrefix}/{scheme}/signin`. Renaming a scheme there breaks
+  the provider registration in Entra/B2C. This sample's `CallbackPath` (like the real
+  IdG's own *file-based* providers) is just whatever string you write, so this
+  particular trap only applies to the DB path either way.
 
 ## References
 

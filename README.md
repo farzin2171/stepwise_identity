@@ -27,9 +27,18 @@ A mini Identity Gateway, built from scratch in phases that mirror
   its [README](src/SampleApi/README.md).
 - [src/ExternalIdp](src/ExternalIdp) — a second, independent Duende IdentityServer that
   IdentityServerHost federates to (Acme's users only) as of Phase 4. See its
-  [README](src/ExternalIdp/README.md). Want to wire in a real Microsoft Entra ID or
-  Azure AD B2C tenant instead of this toy one? See
-  [src/IdentityServerHost/docs/azure-entra-b2c-setup.md](src/IdentityServerHost/docs/azure-entra-b2c-setup.md).
+  [README](src/ExternalIdp/README.md).
+
+External providers are now config-driven — a first step toward how
+`Applications.IdentityGateway` actually does it, ported into
+[src/IdentityServerHost/Configurations/Authentication](src/IdentityServerHost/Configurations/Authentication):
+- [src/IdentityServerHost/docs/external-providers-configuration.md](src/IdentityServerHost/docs/external-providers-configuration.md)
+  — the `ExternalProviders` config shape, the settings reference, how tenant gating
+  works now, and what's modeled but not yet wired (`FederatedConfiguration`,
+  `ClaimMappings`).
+- [src/IdentityServerHost/docs/azure-entra-b2c-setup.md](src/IdentityServerHost/docs/azure-entra-b2c-setup.md)
+  — step-by-step setup for a real Microsoft Entra ID tenant or Azure AD B2C tenant,
+  updated for the config-driven wiring above.
 
 Verification scripts (repo root):
 

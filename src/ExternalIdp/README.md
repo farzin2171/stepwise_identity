@@ -50,6 +50,16 @@ grant type, same PKCE requirement, same shape. The only test user is Carol
 (`carol`/`carol`), who exists *only here* — the entire point of federation is that the
 relying party (IdentityServerHost) doesn't maintain its own password for her.
 
+Also structurally identical, and easy to forget: `Program.cs`'s cookie relaxation.
+**This project is its own Duende IdentityServer, so it has the exact same
+`SameSite=None`-without-`Secure` cookie defaults IdentityServerHost does** — and fixing
+that on IdentityServerHost does nothing for this project; they're separate ASP.NET Core
+apps with separate `Program.cs` files. Missing this fix here specifically was a real,
+confirmed bug (found by inspecting raw `Set-Cookie` headers, not by a failing script —
+see IdentityServerHost's README's Phase 4 gotcha #1 for the full story): this app's own
+`idsrv` session cookie never survived a real browser's redirect back into this app's own
+`/connect/authorize/callback`, so Carol's login here never stuck.
+
 ## Running it
 
 This project doesn't do anything on its own — it just needs to be up when

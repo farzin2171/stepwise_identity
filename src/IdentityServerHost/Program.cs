@@ -1,5 +1,6 @@
-using Duende.IdentityServer;
 using IdentityServerHost;
+using IdentityServerHost.Configurations.Authentication;
+using IdentityServerHost.Configurations.Authentication.Helpers;
 using IdentityServerHost.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 
@@ -15,9 +16,23 @@ builder.Services.AddScoped<TenantContext>();
 // did it, for the token-issuance request that follows to see it).
 builder.Services.AddSingleton<ExternalUserStore>();
 
+// Bind target for the "ExternalProviders" config section — see appsettings.Development.json and
+// docs/external-providers-configuration.md. IdG counterpart: the same section, loaded the same way, in
+// externalproviderssettings.json.
+builder.Services.Configure<ExternalProvidersOptions>(builder.Configuration.GetSection("ExternalProviders"));
+builder.Services.AddSingleton<IAuthenticationHelper, AuthenticationHelper>();
+
 builder.Services.AddIdentityServer(options =>
        {
            options.KeyManagement.Enabled = false;
+
+           // NOT covered by the ConfigureAll<CookieAuthenticationOptions> fix below — this cookie is
+           // written directly by Duende's own session service (DefaultUserSession), not through the
+           // standard ASP.NET Core cookie-auth handler, so CookieAuthenticationOptions never touches it.
+           // Defaults to None specifically to support cross-origin check-session-iframe monitoring, a
+           // feature neither MvcClient nor ReactSpa implements — relaxing it here is safe and closes the
+           // one cookie the blanket fix below was previously (incorrectly) documented as covering.
+           options.Authentication.CheckSessionCookieSameSiteMode = SameSiteMode.Lax;
        })
        .AddInMemoryIdentityResources(Config.IdentityResources)
        .AddInMemoryApiScopes(Config.ApiScopes)
@@ -33,9 +48,13 @@ builder.Services.AddIdentityServer(options =>
        // externally-provisioned principal ExternalController.cs signs in. See SampleProfileService.cs.
        .AddProfileService<SampleProfileService>();
 
-// IdentityServer's own cookies (idsrv, idsrv.external, idsrv.session) default to SameSite=None without
-// Secure — logged as a framework warning. Relaxing to Lax is safe here because every hop in this sample
-// stays on "localhost" as far as SameSite's site definition (scheme + registrable domain) is concerned.
+// IdentityServer's own cookies (idsrv, idsrv.external) default to SameSite=None without Secure —
+// logged as a framework warning, and silently DROPPED outright by a real browser (not just warned
+// about) since a real browser refuses to store a SameSite=None cookie that isn't also Secure, and this
+// sample runs on plain HTTP. Relaxing to Lax is safe here because every hop in this sample stays on
+// "localhost" as far as SameSite's site definition (scheme + registrable domain) is concerned.
+// idsrv.session is NOT covered by this — see CheckSessionCookieSameSiteMode above for why it needs its
+// own, separate fix.
 builder.Services.ConfigureAll<CookieAuthenticationOptions>(options =>
 {
     options.Cookie.SameSite = SameSiteMode.Lax;
@@ -43,33 +62,11 @@ builder.Services.ConfigureAll<CookieAuthenticationOptions>(options =>
 });
 
 // A federated login is a login to ANOTHER app's IdentityServer, using this app as the relying party.
-// SignInScheme = ExternalCookieAuthenticationScheme is the piece that makes this an "external" provider
-// rather than replacing local login entirely: AddIdentityServer() above already registered that cookie
-// scheme, and ExternalController below reads from it once, then discards it in favor of this app's own
-// principal (IdG counterpart: Configurations/Authentication/*AuthenticationExtensions.cs).
+// Every provider under the "ExternalProviders" config section gets registered here, one
+// AddOpenIdConnect() call each — see Configurations/Authentication/ExternalProviderAuthenticationExtensions.cs.
+// IdG counterpart: AddExternalProvidersFromFile(_configuration) in Startup.cs.
 builder.Services.AddAuthentication()
-       .AddOpenIdConnect("external-idp", options =>
-       {
-           options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
-           options.Authority = "http://localhost:5010";
-           options.ClientId = "mini-idg-host";
-           options.ClientSecret = "external-secret";
-           options.ResponseType = "code";
-           options.UsePkce = true;
-           options.CallbackPath = "/signin-external-idp";
-           options.RequireHttpsMetadata = false;   // local teaching sample only
-
-           options.Scope.Clear();
-           options.Scope.Add("openid");
-           options.Scope.Add("profile");
-           options.GetClaimsFromUserInfoEndpoint = true;   // "profile" alone isn't enough — see MvcClient's README
-           options.MapInboundClaims = false;   // keep claim types exactly as ExternalIdp sends them
-
-           options.CorrelationCookie.SameSite = SameSiteMode.Lax;
-           options.CorrelationCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-           options.NonceCookie.SameSite = SameSiteMode.Lax;
-           options.NonceCookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-       });
+       .AddExternalProvidersFromFile(builder.Configuration);
 
 var app = builder.Build();
 

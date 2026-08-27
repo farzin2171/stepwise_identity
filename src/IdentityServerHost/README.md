@@ -438,20 +438,24 @@ independent Duende IdentityServer with one test user (Carol) and one registered 
 (mini-idg itself). From ExternalIdp's point of view, this project is *just another
 relying party*. Everything tenant-aware lives entirely on this side.
 
-### Per-tenant gating — `Tenants.cs`
+### Per-tenant gating — config-driven, not hardcoded
 
-```csharp
-public static IReadOnlyDictionary<string, string[]> AllowedExternalSchemes => new()
-{
-    ["acme"] = ["external-idp"],
-    ["globex"] = []
-};
+Phase 4's first cut hardcoded a `Tenants.AllowedExternalSchemes` dictionary. That's gone
+now — see [`docs/external-providers-configuration.md`](docs/external-providers-configuration.md)
+for the full write-up of what replaced it and why. Short version: each provider
+declares its own tenant in config —
+
+```json
+// appsettings.Development.json
+"ExternalProviders": { "OpenId": [ { "Name": "external-idp", "EcosystemTenant": "acme", "...": "..." } ] }
 ```
 
-`AccountController.Login` filters this by `tenantContext.TenantKey` and hands the result
-to the view as `ExternalSchemes`. Acme's login page shows a **Sign in with ExternalIdp**
-button above the local form; Globex's shows only the form — the actual HTML the server
-renders differs by tenant, not just a label somewhere.
+— and `AuthenticationHelper.GetAllAvailableIdentityProviders(tenantKey)` filters the
+whole provider list by that field, instead of a second hand-maintained mapping.
+`AccountController.Login` calls that and hands the result to the view as
+`ExternalProviders`. Acme's login page shows a **Sign in with ExternalIdp** button above
+the local form; Globex's shows only the form — the actual HTML the server renders
+differs by tenant, not just a label somewhere.
 
 ### `Controllers/ExternalController.cs` — challenge and callback
 
@@ -482,16 +486,47 @@ relies on; `tenant` riding along in the same dictionary is this sample's additio
 the reason Carol ends up with `tenant_id: acme` even though ExternalIdp never heard the
 word "acme."
 
-### Three things that broke, and what each one actually teaches
+### Four things that broke, and what each one actually teaches
 
-1. **IdentityServer's own cookies default to `SameSite=None` without `Secure`.** The
-   framework logs a warning (`"idsrv.external" has set 'SameSite=None' and must also set
-   'Secure'`) but still sets the cookie — a real browser would refuse to store it. Same
-   shape as Phase 2's correlation-cookie problem, just on *IdentityServer's own* session
-   cookies (`idsrv`, `idsrv.external`, `idsrv.session`) instead of the OIDC client
-   handler's. Already fixed for all three by the blanket
-   `ConfigureAll<CookieAuthenticationOptions>(...)` this project added in Phase 2 — one
-   fix, no per-scheme repetition needed.
+1. **IdentityServer's own cookies default to `SameSite=None` without `Secure` — and this
+   is a hard browser rejection, not just a logged warning.** The framework logs a
+   warning (`"idsrv.external" has set 'SameSite=None' and must also set 'Secure'`), but
+   the real consequence is worse than the log line suggests: a real browser refuses to
+   *store* a `SameSite=None` cookie sent without `Secure` at all, full stop. Same shape
+   as Phase 2's correlation-cookie problem, just on *IdentityServer's own* session
+   cookies instead of the OIDC client handler's — fixed here the same way, with the
+   blanket `ConfigureAll<CookieAuthenticationOptions>(...)` this project added in Phase 2.
+   **That fix does not cover `idsrv.session`, though**, despite this README previously
+   claiming otherwise — see the dedicated note below, and the real bug this caused.
+   **And it has to be applied separately to every project that's its own Duende
+   IdentityServer.** `../ExternalIdp` is a second, completely independent ASP.NET Core
+   app with its own `Program.cs` — the fix here does nothing for it. Missing it there
+   was a real, confirmed bug (not a documentation nitpick): traced with a raw
+   `HttpClient` that doesn't enforce cookie policy, the federated login always
+   succeeded; traced with the browser's actual `Secure`/`SameSite` rules in mind
+   (inspecting the literal `Set-Cookie` headers), ExternalIdp's own `idsrv` cookie came
+   back `samesite=none` with no `Secure`, over plain HTTP — a real browser would drop it
+   outright, and Carol's sign-in on ExternalIdp would never survive the redirect back
+   into ExternalIdp's *own* `/connect/authorize/callback`. Fixed by adding the same
+   `ConfigureAll<CookieAuthenticationOptions>(...)` call to `ExternalIdp/Program.cs`.
+   **The concrete lesson:** a scripted HTTP-client test proves your *logic* is correct;
+   it does not prove your cookies survive a real browser's policy enforcement. Both are
+   needed, and neither substitutes for the other.
+
+   > **The `idsrv.session` cookie needs a *different* fix, in a *different* place.**
+   > `ConfigureAll<CookieAuthenticationOptions>` only touches cookies written through
+   > ASP.NET Core's standard cookie-authentication handler. `idsrv.session` isn't one of
+   > those — it's written directly by Duende's own session-management service, for the
+   > cross-origin check-session-iframe feature (which defaults its `SameSite` to `None`
+   > for exactly that reason, and which neither MvcClient nor ReactSpa implements).
+   > Relaxing it takes a separate, dedicated setting:
+   > `options.Authentication.CheckSessionCookieSameSiteMode = SameSiteMode.Lax;` inside
+   > `AddIdentityServer(options => { ... })` — in **both** `IdentityServerHost/Program.cs`
+   > and `ExternalIdp/Program.cs`. The takeaway generalizes beyond this one cookie: not
+   > every cookie a framework sets goes through the options object you'd naturally reach
+   > for first, and "I called the blanket fix" isn't the same as verifying every cookie
+   > actually changed — which is exactly what inspecting raw `Set-Cookie` headers, not
+   > just trusting a passing test, caught here.
 2. **`response_mode=form_post` cascades — there isn't just one auto-post form in a
    federated login, there are two.** One from ExternalIdp's own authorize callback
    (handing the code back to mini-idg), and — because mini-idg's *own* pending authorize
@@ -509,6 +544,21 @@ word "acme."
    system's answer: **persist what you provisioned, and have the profile service look it
    up.** The naive approach would have taught the wrong mental model even though it
    happened to compile.
+4. **Every external provider is itself a Duende IdentityServer, so it advertises Pushed
+   Authorization Requests (PAR) too — and this hop needed the same fix MvcClient did.**
+   Same underlying gotcha as MvcClient's README's "The PAR gotcha this surfaced," one hop
+   further out: IdentityServerHost's own OIDC client registration for `"external-idp"`
+   (in `Configurations/Authentication/OpenId/OpenIdConnectAuthenticationExtensions.cs`)
+   defaults to using PAR against ExternalIdp automatically, which replaces the visible
+   `/connect/authorize?client_id=...&scope=...` query string with an opaque
+   `?request_uri=urn:...&client_id=...`. Duende's default PAR lifetime is 10 minutes and
+   a scripted trace completes through it without issue either way, so this specific hop
+   wasn't confirmed to be *breaking* anything — but it hides every parameter this
+   sample's whole design deliberately keeps visible, and it's the exact same class of
+   surprise MvcClient's own PAR fix was for. Found by watching an actual login trace and
+   asking "why does this URL look different from every other authorize redirect in this
+   repo?" Fixed the same way:
+   `options.PushedAuthorizationBehavior = PushedAuthorizationBehavior.Disable;`.
 
 One more piece worth naming: the default profile service `.AddTestUsers()` registers
 only knows how to answer "is this user active?" for subjects in `TestUsers.Users` — it
@@ -516,26 +566,31 @@ silently rejects Carol ("User is not active," no further detail in the log).
 `Services/SampleProfileService.cs` replaces it, branching on the `idp` claim to ask
 either `TestUserStore` (local) or `ExternalUserStore` (federated).
 
-### `Program.cs` — registering the federation
+### Registering the federation — config-driven
 
 ```csharp
+// Program.cs
 builder.Services.AddAuthentication()
-       .AddOpenIdConnect("external-idp", options =>
-       {
-           options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
-           options.Authority = "http://localhost:5010";
-           options.ClientId = "mini-idg-host";
-           options.ClientSecret = "external-secret";
-           // ...
-       });
+       .AddExternalProvidersFromFile(builder.Configuration);
 ```
 
-`SignInScheme = ExternalCookieAuthenticationScheme` is the whole trick — without it, a
-successful ExternalIdp login would write this app's *main* session cookie directly and
-the user would just be logged in, bypassing `ExternalController.Callback` (and its
-tenant-matching, provisioning, and local-session-issuing logic) entirely. Pointing it at
-the *external* cookie instead makes the ExternalIdp result a short-lived, intermediate
-fact that the callback still has to convert into a real session.
+That one line replaces what used to be a hardcoded `.AddOpenIdConnect("external-idp",
+options => { ... })` block in `Program.cs`. It loops every entry under the
+`ExternalProviders` config section and calls `AddOpenIdConnect` once per provider — see
+[`Configurations/Authentication/ExternalProviderAuthenticationExtensions.cs`](Configurations/Authentication/ExternalProviderAuthenticationExtensions.cs)
+and [`docs/external-providers-configuration.md`](docs/external-providers-configuration.md)
+for the full shape. Inside that per-provider registration
+(`Configurations/Authentication/OpenId/OpenIdConnectAuthenticationExtensions.cs`),
+`SignInScheme = ExternalCookieAuthenticationScheme` is the one line doing the real
+work — without it, a successful ExternalIdp login would write this app's *main* session
+cookie directly and the user would just be logged in, bypassing
+`ExternalController.Callback` (and its tenant-matching, provisioning, and
+local-session-issuing logic) entirely. Pointing it at the *external* cookie instead
+makes the ExternalIdp result a short-lived, intermediate fact that the callback still
+has to convert into a real session.
+
+Adding a second provider — a real Entra ID tenant, say — is now a config change, not a
+code change: see [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md).
 
 ### What's deliberately still a simplification
 
@@ -697,9 +752,9 @@ click through a real tenant mismatch in a browser — try `bob`/`bob` on Acme, o
 `alice`/`alice` on Globex. Then ask yourself: *"What would `LinkedTenants` actually let
 two tenants share?"* — that's the escape hatch this sample didn't implement.
 
-Try adding a **second** external scheme to `Tenants.AllowedExternalSchemes["acme"]`
-pointing at the same `ExternalIdp` under a different scheme name (you'll need a second
-`.AddOpenIdConnect(...)` registration and client registration to go with it) — what has
-to change for the login page to offer a *choice*? Then ask: *"How would this look with a
-real Entra tenant instead of ExternalIdp?"* — see
+Try adding a **second** `OpenId` entry to `appsettings.Development.json`, `EcosystemTenant: "acme"`,
+pointing at the same `ExternalIdp` under a different `Name` (you'll need a second client
+registration in `ExternalIdp/Config.cs` to go with it) — no `Program.cs` change needed
+this time. What does the login page do differently now? Then ask: *"How would this look
+with a real Entra tenant instead of ExternalIdp?"* — see
 [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md) for exactly that.
