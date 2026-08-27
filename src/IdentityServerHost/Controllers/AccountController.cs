@@ -10,14 +10,19 @@ namespace IdentityServerHost.Controllers;
 // its own — IIdentityServerInteractionService is the contract between "the user needs to log in" (an
 // authorize request IdentityServer can't complete) and "here is a page that can ask them to."
 // IdG counterpart: Modules/Account/AccountController.cs (local-login half only — the external-provider
-// half is ExternalController.cs, added in Phase 4).
+// half is ExternalController.cs).
 public class AccountController(TestUserStore users, IIdentityServerInteractionService interaction, TenantContext tenantContext) : Controller
 {
     [HttpGet]
     public IActionResult Login(string returnUrl) => View(new LoginViewModel
     {
         ReturnUrl = returnUrl,
-        TenantDisplayName = tenantContext.DisplayName
+        TenantDisplayName = tenantContext.DisplayName,
+        // No tenant resolved at all -> no external options shown, same fail-closed default the real IdG's
+        // IsTenantParameterRequired uses when a client needs a tenant and none was supplied.
+        ExternalSchemes = tenantContext.TenantKey is not null
+            ? Tenants.AllowedExternalSchemes.GetValueOrDefault(tenantContext.TenantKey, [])
+            : []
     });
 
     [HttpPost]
@@ -42,7 +47,10 @@ public class AccountController(TestUserStore users, IIdentityServerInteractionSe
                 return View(new LoginViewModel
                 {
                     ReturnUrl = model.ReturnUrl,
-                    TenantDisplayName = tenantContext.DisplayName
+                    TenantDisplayName = tenantContext.DisplayName,
+                    ExternalSchemes = tenantContext.TenantKey is not null
+                        ? Tenants.AllowedExternalSchemes.GetValueOrDefault(tenantContext.TenantKey, [])
+                        : []
                 });
             }
 
@@ -82,6 +90,7 @@ public class LoginViewModel
 {
     public string? ReturnUrl { get; set; }
     public string? TenantDisplayName { get; set; }
+    public string[] ExternalSchemes { get; set; } = [];
 }
 
 public class LoginInputModel

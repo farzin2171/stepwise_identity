@@ -9,6 +9,19 @@
   {
     <p style="color: #991b1b;">@ViewData.ModelState.Values.First().Errors.First().ErrorMessage</p>
   }
+  @if (Model.ExternalSchemes.Length > 0)
+  {
+    <div style="margin-bottom: 1.2rem;">
+      @foreach (var scheme in Model.ExternalSchemes)
+      {
+        <a href="/External/Challenge?scheme=@scheme&returnUrl=@Uri.EscapeDataString(Model.ReturnUrl ?? "")"
+           style="display: block; padding: 0.5rem; margin-bottom: 0.5rem; background: #eef6ff; border: 1px solid #bcd; text-align: center; text-decoration: none; color: #145;">
+          Sign in with @IdentityServerHost.Tenants.SchemeDisplayNames[scheme]
+        </a>
+      }
+    </div>
+    <p style="text-align: center; color: #999; font-size: 0.8rem;">— or —</p>
+  }
   <form asp-controller="Account" asp-action="Login" method="post">
     <input type="hidden" name="ReturnUrl" value="@Model.ReturnUrl" />
     <p><label>Username<br /><input type="text" name="Username" /></label></p>

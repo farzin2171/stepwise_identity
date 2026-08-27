@@ -9,16 +9,18 @@ actually is under all its production scaffolding.
 1. Foundation ✓
 2. Clients ✓ (MVC + React)
 3. Multi-tenancy ✓
-4. External identity providers ← next
-5. Persistence (SQL Server instead of in-memory)
+4. External identity providers ✓
+5. Persistence (SQL Server instead of in-memory) ← next
 6. Data ingestion / config tooling
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
 the other half of Phase 2 — two applications, of the two kinds the target architecture
 actually has (a server-side app and a browser-only SPA), that log a user in against this
-server. Their own READMEs cover what each is; this one covers the IdentityServer side of
-both flows.
+server. [`../ExternalIdp`](../ExternalIdp) (Phase 4) is different in kind: a second,
+independent Duende IdentityServer this project federates *to*, not a client of it. Each
+sibling's own README covers what it is; this one covers the IdentityServer side of every
+flow.
 
 ## Phase 1 recap — why start with (almost) nothing?
 
@@ -416,24 +418,162 @@ the SampleApi section above: this is an allowlist, not a request — a client st
 to put `"tenant"` in its own `Scope`/`scope` list for `tenant_id` to actually show up
 anywhere.
 
+---
+
+## Phase 4 — external identity providers, per tenant
+
+The deep mechanics of external federation — claim mapping, first-login provisioning
+bugs, `FederatedConfiguration` — are a whole separate topic covered against the *real*
+IdG elsewhere in this course. This phase deliberately doesn't re-teach that. Its job is
+narrower and specific to this sample's brief: **which external IdP a login page offers
+depends on the tenant**, built on top of Phase 3's `TenantContext` rather than in
+isolation.
+
+```
+Browser  ↔  IdentityServerHost (:5000 — mini-idg)  ↔ (Acme only) ↔  ExternalIdp (:5010 — a separate org)
+```
+
+[`../ExternalIdp`](../ExternalIdp) knows nothing about tenants — it's a plain, second,
+independent Duende IdentityServer with one test user (Carol) and one registered client
+(mini-idg itself). From ExternalIdp's point of view, this project is *just another
+relying party*. Everything tenant-aware lives entirely on this side.
+
+### Per-tenant gating — `Tenants.cs`
+
+```csharp
+public static IReadOnlyDictionary<string, string[]> AllowedExternalSchemes => new()
+{
+    ["acme"] = ["external-idp"],
+    ["globex"] = []
+};
+```
+
+`AccountController.Login` filters this by `tenantContext.TenantKey` and hands the result
+to the view as `ExternalSchemes`. Acme's login page shows a **Sign in with ExternalIdp**
+button above the local form; Globex's shows only the form — the actual HTML the server
+renders differs by tenant, not just a label somewhere.
+
+### `Controllers/ExternalController.cs` — challenge and callback
+
+Every external scheme (just `"external-idp"` here; a real deployment might have several)
+converges on the same two actions:
+
+```csharp
+public IActionResult Challenge(string scheme, string returnUrl)
+{
+    var props = new AuthenticationProperties
+    {
+        RedirectUri = Url.Action(nameof(Callback)),
+        Items =
+        {
+            ["returnUrl"] = returnUrl,
+            // ExternalIdp has no concept of "acme" - this is the one piece of local
+            // context that has to survive the round trip, same mechanism as returnUrl.
+            ["tenant"] = tenantContext.TenantKey
+        }
+    };
+    return base.Challenge(props, scheme);
+}
+```
+
+`Items` round-trips through the encrypted `state` parameter automatically —
+`returnUrl` surviving an external hop is the standard mechanism every OIDC quickstart
+relies on; `tenant` riding along in the same dictionary is this sample's addition, and
+the reason Carol ends up with `tenant_id: acme` even though ExternalIdp never heard the
+word "acme."
+
+### Three things that broke, and what each one actually teaches
+
+1. **IdentityServer's own cookies default to `SameSite=None` without `Secure`.** The
+   framework logs a warning (`"idsrv.external" has set 'SameSite=None' and must also set
+   'Secure'`) but still sets the cookie — a real browser would refuse to store it. Same
+   shape as Phase 2's correlation-cookie problem, just on *IdentityServer's own* session
+   cookies (`idsrv`, `idsrv.external`, `idsrv.session`) instead of the OIDC client
+   handler's. Already fixed for all three by the blanket
+   `ConfigureAll<CookieAuthenticationOptions>(...)` this project added in Phase 2 — one
+   fix, no per-scheme repetition needed.
+2. **`response_mode=form_post` cascades — there isn't just one auto-post form in a
+   federated login, there are two.** One from ExternalIdp's own authorize callback
+   (handing the code back to mini-idg), and — because mini-idg's *own* pending authorize
+   request for the React SPA is still in flight underneath — a second one appears
+   later, at the very end, handing the final code to `reactspa`. Federation doesn't
+   replace the outer OIDC flow; it happens inside a pause in it.
+3. **The profile service's `context.Subject` is not the principal you signed in with.**
+   The real find. An early version of `ExternalController.Callback` put `name` and
+   `tenant_id` onto the principal directly via `IdentityServerUser.AdditionalClaims`,
+   then a plain pass-through profile service tried to read them back from
+   `context.Subject.Claims` at token-issuance time — and got only `sub`. IdentityServer
+   reconstructs `context.Subject` from the session as a minimal principal; whatever you
+   signed in with beyond the protocol-required claims doesn't ride along for free. The
+   fix (`ExternalUserStore.cs`) isn't a workaround — it's the same shape as the real
+   system's answer: **persist what you provisioned, and have the profile service look it
+   up.** The naive approach would have taught the wrong mental model even though it
+   happened to compile.
+
+One more piece worth naming: the default profile service `.AddTestUsers()` registers
+only knows how to answer "is this user active?" for subjects in `TestUsers.Users` — it
+silently rejects Carol ("User is not active," no further detail in the log).
+`Services/SampleProfileService.cs` replaces it, branching on the `idp` claim to ask
+either `TestUserStore` (local) or `ExternalUserStore` (federated).
+
+### `Program.cs` — registering the federation
+
+```csharp
+builder.Services.AddAuthentication()
+       .AddOpenIdConnect("external-idp", options =>
+       {
+           options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
+           options.Authority = "http://localhost:5010";
+           options.ClientId = "mini-idg-host";
+           options.ClientSecret = "external-secret";
+           // ...
+       });
+```
+
+`SignInScheme = ExternalCookieAuthenticationScheme` is the whole trick — without it, a
+successful ExternalIdp login would write this app's *main* session cookie directly and
+the user would just be logged in, bypassing `ExternalController.Callback` (and its
+tenant-matching, provisioning, and local-session-issuing logic) entirely. Pointing it at
+the *external* cookie instead makes the ExternalIdp result a short-lived, intermediate
+fact that the callback still has to convert into a real session.
+
+### What's deliberately still a simplification
+
+- **Tenant is a property of the request here**, resolved from `acr_values` and carried
+  through `AuthenticationProperties`. A real system's equivalent typically resolves it
+  from the *scheme name* instead (a static per-provider config value) — a real
+  difference in shape, not just a missing feature, as the Phase 3 section above already
+  flagged.
+- **No claim-mapping complexity.** No `FederatedConfiguration`, no
+  `ExternalIdClaimName`, no duplicate-claim collision handling. See
+  [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md) for where that
+  complexity actually shows up once you point this at a real Microsoft tenant instead
+  of the toy `ExternalIdp`.
+- **`ExternalUserStore` is a `ConcurrentDictionary` that resets on every restart.**
+  Phase 5 is exactly this problem, generalized to every store in the app.
+
 ## Running it
 
-1. **Four terminals**
+1. **Five terminals**
 
    ```bash
    # terminal 1
+   cd src/ExternalIdp
+   dotnet run --urls http://localhost:5010
+
+   # terminal 2
    cd src/IdentityServerHost
    dotnet run
 
-   # terminal 2
+   # terminal 3
    cd src/MvcClient
    dotnet run --urls http://localhost:5002
 
-   # terminal 3
+   # terminal 4
    cd src/SampleApi
    dotnet run --urls http://localhost:5003
 
-   # terminal 4
+   # terminal 5
    cd src/ReactSpa
    npm install   # first time only
    npm run dev
@@ -441,8 +581,13 @@ anywhere.
 
 2. **MVC flow** — browse to `http://localhost:5002`, click *Go to the secure page*, and
    sign in as `alice` / `alice` (or `bob` / `bob`). You'll land back on the secure page
-   with a table of every claim in your identity — `sub`, `name`, `email`, `idp`, and the
-   token timestamps.
+   with a table of every claim in your identity — `sub`, `name`, `idp`, and the token
+   timestamps. Notably *not* `email`, even though `alice`'s `TestUser` has one and
+   `profile` is in scope: per the OIDC spec, `profile` and `email` are two separate
+   standard scopes, and `new IdentityResources.Profile()` genuinely doesn't carry
+   `email` in its `UserClaims`. Adding `new IdentityResources.Email()` to `Config.cs`
+   (and `"email"` to a client's requested scopes) is exactly the kind of thing Phase 1's
+   own "try it yourself" suggested experimenting with.
 
 3. **Call the API** — from the secure page, click *Call the API*. MvcClient forwards
    its access token to SampleApi as a `Bearer` header; SampleApi validates it
@@ -457,16 +602,28 @@ anywhere.
    the browser's own `fetch()` calls SampleApi directly across origins (`:5173` →
    `:5003`), which is why SampleApi now has a CORS policy (see its README).
 
-5. **Tenant resolution** — [`test-phase3.ps1`](../../test-phase3.ps1) drives four
-   scenarios end-to-end against `reactspa`: Alice into Acme (succeeds, correct
-   `tenant_id` claim), Alice into Globex (rejected), Bob into Globex (succeeds), and a
-   login with no tenant hint at all (still works — Phase 2 is unaffected). To see it in
-   a browser, you'd need a client that sets `acr_values` on its challenge — neither
-   MvcClient nor ReactSpa does that yet; wiring one up (Microsoft's OIDC handler exposes
-   it via `OpenIdConnectChallengeProperties.AcrValues`) is this phase's practice
-   exercise, not something already done for you.
+5. **Tenant resolution, in a browser** — from `http://localhost:5002`, click *Log in as
+   Acme Corp* or *Log in as Globex Corporation* (see MvcClient's README for how these
+   set `acr_values` before redirecting). Try `alice`/`alice` on Acme (succeeds,
+   `tenant_id: acme` on the claims table) and on Globex (rejected — right password,
+   wrong tenant). `reactspa` doesn't send `acr_values` yet (still an open exercise —
+   see its README), so the same trick there still requires constructing the authorize
+   URL by hand, the way [`test-phase3.ps1`](../../test-phase3.ps1) does over raw HTTP:
+   Alice into Acme (succeeds, correct `tenant_id` claim), Alice into Globex (rejected),
+   Bob into Globex (succeeds), and a login with no tenant hint at all (still works —
+   Phase 2 is unaffected).
 
-6. **Prefer not to click through a browser?**
+6. **External IdP federation** — from the same *Log in as Acme Corp* link, click
+   **Sign in with ExternalIdp** instead of using the local form, and sign in as
+   `carol`/`carol` (a user that only exists on the separate ExternalIdp server on port
+   5010) — you'll land back on MvcClient's secure page with `name: Carol Chen` and
+   `tenant_id: acme`, even though ExternalIdp itself never heard the word "acme."
+   Globex's login page has no such button at all — try *Log in as Globex Corporation*
+   to confirm. [`test-phase4.ps1`](../../test-phase4.ps1) drives the same round trip
+   over raw HTTP. Want a real Microsoft tenant instead of the toy `ExternalIdp`? See
+   [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md).
+
+7. **Prefer not to click through a browser?**
    [`test-phase2.ps1`](../../test-phase2.ps1) drives the MVC login flow over raw HTTP;
    [`test-api.ps1`](../../test-api.ps1) does the same login and then drives *Call the
    API*; [`test-phase2-spa.ps1`](../../test-phase2-spa.ps1) proves the React SPA's
@@ -474,7 +631,8 @@ anywhere.
    `/connect/token`); [`test-spa-api.ps1`](../../test-spa-api.ps1) proves the same for
    its *Call the API* button (the `api1` scope, and SampleApi's own CORS policy);
    [`test-phase3.ps1`](../../test-phase3.ps1) is the tenant-resolution scenarios from
-   step 5. None of the five drive real browser JavaScript, so steps 2–4 above still
+   step 5; [`test-phase4.ps1`](../../test-phase4.ps1) is the federated-login scenario
+   from step 6. None of the six drive real browser JavaScript, so steps 2–4 above still
    need a manual pass at least once (see `ReactSpa`'s README for why):
 
    ```powershell
@@ -483,6 +641,7 @@ anywhere.
    pwsh ./test-phase2-spa.ps1
    pwsh ./test-spa-api.ps1
    pwsh ./test-phase3.ps1
+   pwsh ./test-phase4.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -496,15 +655,19 @@ anywhere.
 - **`LinkedTenants` or any tenant-linking concept.** A user either matches the requested
   tenant or is rejected outright — no escape hatch for a user who legitimately belongs
   to more than one tenant.
-- **A client that actually sets `acr_values`.** Neither MvcClient nor ReactSpa
-  challenges with a tenant hint yet — `test-phase3.ps1` proves the IdentityServer side
-  works by crafting that query parameter directly. Wiring a real client up to do this is
-  the practice exercise for this phase.
+- **ReactSpa setting `acr_values`.** MvcClient now does (see its README's "Logging in as
+  a specific tenant" section — including two real gotchas that took actually clicking
+  the button to find: Pushed Authorization Requests hiding the parameter entirely, and a
+  missing `ClaimAction` silently dropping `tenant_id` from the merged claims). Wiring the
+  same into ReactSpa (`oidc-client-ts`'s `signinRedirect({ acr_values: ... })`) is still
+  open — see its README's "try it yourself" section.
 - **Persistence.** Everything still resets to empty on every restart except
-  `tempkey.jwk` (the signing key) — clients, resources, tenants, and test users are all
-  in-memory C#. A later phase replaces the in-memory stores with a real database.
-- **External IdPs.** No user in this sample logs in through anything but the local
-  password form yet — that's Phase 4, next.
+  `tempkey.jwk` (the signing key) — clients, resources, tenants, test users, *and now
+  provisioned external identities* (`ExternalUserStore`) are all in-memory. Phase 5,
+  next, replaces every one of these with a real database.
+- **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
+  configurable external-id claim name, no duplicate-claim handling — Carol's `name`
+  claim just works because ExternalIdp only ever sends one of it.
 - **A license key.** Still fine for local dev forever; still out of scope for this
   learning project.
 
@@ -529,10 +692,14 @@ Remove `"name"` from the `ApiResource`'s `UserClaims` and re-run *Call the API*.
 `email` claim still shows up, `name` doesn't — confirming that each claim riding on an
 access token was put there deliberately, one at a time, not "whatever the user has."
 
-Wire `OpenIdConnectChallengeProperties.AcrValues = "tenant:acme"` into a new action on
-MvcClient's `HomeController` (it's just an extra property on the object passed to
-`Challenge(properties)`), then click through a real mismatch in a browser: hit that
-action while trying to sign in as `bob`. Then ask yourself: *"What would `LinkedTenants`
-actually let two tenants share?"* — that's the escape hatch this sample didn't
-implement, and a reasonable question to have before Phase 4 adds a second way to prove
-who someone is.
+MvcClient's *Log in as Acme Corp* / *Log in as Globex Corporation* links already let you
+click through a real tenant mismatch in a browser — try `bob`/`bob` on Acme, or
+`alice`/`alice` on Globex. Then ask yourself: *"What would `LinkedTenants` actually let
+two tenants share?"* — that's the escape hatch this sample didn't implement.
+
+Try adding a **second** external scheme to `Tenants.AllowedExternalSchemes["acme"]`
+pointing at the same `ExternalIdp` under a different scheme name (you'll need a second
+`.AddOpenIdConnect(...)` registration and client registration to go with it) — what has
+to change for the login page to offer a *choice*? Then ask: *"How would this look with a
+real Entra tenant instead of ExternalIdp?"* — see
+[`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md) for exactly that.

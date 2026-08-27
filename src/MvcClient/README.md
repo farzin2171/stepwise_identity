@@ -137,19 +137,116 @@ cd . && dotnet run --urls http://localhost:5002
 cd ../SampleApi && dotnet run --urls http://localhost:5003
 ```
 
-Then browse to `http://localhost:5002`, click *Go to the secure page*, sign in as
-`alice` / `alice` or `bob` / `bob`, and click *Call the API*.
+Then browse to `http://localhost:5002` and try either link:
+
+- *Go to the secure page* — no tenant hint, works for any local user.
+- *Log in as Acme Corp* — sign in as `alice`/`alice` (succeeds, `tenant_id: acme` on the
+  claims table) or via the ExternalIdp button as `carol`/`carol` (needs `ExternalIdp`
+  running too — see [`../IdentityServerHost/README.md`](../IdentityServerHost/README.md#running-it)).
+  Try `bob`/`bob` here to see the tenant-mismatch rejection.
+- *Log in as Globex Corporation* — sign in as `bob`/`bob` (succeeds); try `alice`/`alice`
+  here instead for the same rejection from the other direction.
 
 Prefer not to click through a browser? [`test-api.ps1`](../../test-api.ps1) (repo root)
-drives the same login + API call over raw HTTP.
+drives the login + API call over raw HTTP.
 
-## About tenant resolution (Phase 3)
+## Logging in as a specific tenant (Phase 3)
 
-IdentityServerHost now resolves and enforces a tenant per login (`acr_values=tenant:
-<name>` — see its README's "Phase 3" section) — but this app doesn't send that
-parameter yet, so every login here behaves exactly as before: no tenant hint, no
-mismatch possible, `bob`/`bob` and `alice`/`alice` both still work unconditionally.
-[`test-phase3.ps1`](../../test-phase3.ps1) (repo root) exercises tenant matching against
-`reactspa` instead, since it needs no client secret to script. Wiring
-`OpenIdConnectChallengeProperties.AcrValues` into a new action here, so this app can
-challenge with a tenant hint too, is that phase's suggested practice exercise.
+IdentityServerHost resolves and enforces a tenant per login from the OIDC
+`acr_values=tenant:<name>` request parameter (see its README's "Phase 3" section) — but
+a client has to actually *set* that parameter before redirecting for any of it to kick
+in. `[Authorize]` on `Secure()` alone never does — it triggers a bare challenge with no
+tenant hint, so IdentityServerHost's login page defaults to local-login-only, same as
+before Phase 3 existed. The home page's **Log in as Acme Corp** / **Log in as Globex
+Corporation** links exist specifically to set it:
+
+```csharp
+[HttpGet]
+public IActionResult LoginAsTenant(string tenant)
+{
+    var props = new AuthenticationProperties
+    {
+        RedirectUri = Url.Action(nameof(Secure)),
+        Items = { ["acr_values"] = $"tenant:{tenant}" }
+    };
+    return Challenge(props, "oidc");
+}
+```
+
+Two things worth knowing if you go looking for `OpenIdConnectChallengeProperties.AcrValues`
+— it doesn't exist in this package version. The supported way to add a parameter the
+handler has no dedicated property for is an event hook, registered in `Program.cs`:
+
+```csharp
+options.Events = new OpenIdConnectEvents
+{
+    OnRedirectToIdentityProvider = context =>
+    {
+        if (context.Properties.Items.TryGetValue("acr_values", out var acrValues) && acrValues is not null)
+        {
+            context.ProtocolMessage.AcrValues = acrValues;
+        }
+        return Task.CompletedTask;
+    }
+};
+```
+
+`context.Properties` here is the same `AuthenticationProperties` object `Challenge(props, "oidc")`
+was called with — `LoginAsTenant` stashes the tenant in `Items`, and this event reads it
+back out right before the redirect to IdentityServerHost is built, and stamps it onto
+the actual protocol message.
+
+### The PAR gotcha this surfaced
+
+The first version of this genuinely didn't work, for a reason worth knowing: Duende's
+discovery document advertises a `pushed_authorization_request_endpoint`, and this OIDC
+handler's default (`PushedAuthorizationBehavior.UseIfAvailable`) switches to **Pushed
+Authorization Requests (PAR, RFC 9126)** automatically whenever a server supports it.
+Under PAR, the handler POSTs the real authorize parameters — including `acr_values` — to
+`/connect/par` on a back channel, and the browser's actual redirect only ever carries
+`?request_uri=urn:...&client_id=...`. IdentityServerHost's `TenantResolutionMiddleware`
+does deliberately simple query-string parsing (see its README), so it never saw
+`acr_values` at all under PAR — silently landing on local-login-only, no error anywhere.
+Fixed with:
+
+```csharp
+options.PushedAuthorizationBehavior = PushedAuthorizationBehavior.Disable;
+```
+
+This keeps the classic, fully query-string-visible authorize redirect this sample's
+simplified tenant resolution is built around. A real production client would likely want
+PAR's actual benefit (authorize parameters never sit in browser history/logs) and would
+instead need `TenantResolutionMiddleware` to resolve tenant the way the *real* IdG does —
+from Duende's own parsed `AuthorizationRequest`, not a raw query string.
+
+### A second gotcha, one layer deeper: claims that don't merge
+
+Even with the tenant hint reaching IdentityServerHost correctly, `tenant_id` still didn't
+show up on this app's own claims table — despite the exact same claim showing up when
+`/connect/userinfo` was called directly with curl. The cause: this OIDC handler only
+merges userinfo claims that have a registered `ClaimAction`, and `ClaimActions` ships
+pre-populated with mappings for standard OIDC claims (`name`, `email`, ...) but nothing
+for a custom claim like `tenant_id` — it gets silently dropped, no warning, no error.
+Fixed with one more line:
+
+```csharp
+options.ClaimActions.MapUniqueJsonKey("tenant_id", "tenant_id");
+```
+
+Any custom (non-standard) claim a real deployment wants surfaced through
+`GetClaimsFromUserInfoEndpoint` needs an explicit line like this — this is not specific
+to `tenant_id`.
+
+## About external IdP federation (Phase 4)
+
+## About external IdP federation (Phase 4)
+
+IdentityServerHost can now federate Acme's users to [`../ExternalIdp`](../ExternalIdp)
+(see its README's "Phase 4" section) — and this app needed **zero changes** to benefit
+from that. From this app's point of view, a user who signed in via ExternalIdp looks
+exactly like one who typed a local password: same `/connect/authorize` →
+`/connect/token` exchange, same claims on the secure page. The federation happens
+entirely behind IdentityServerHost's own login page, which is the whole point of the
+OIDC client/provider boundary — this app only ever talks to *one* identity provider
+(IdentityServerHost), regardless of how many identity providers *that* federates to
+behind the scenes.
