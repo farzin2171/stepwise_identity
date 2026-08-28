@@ -2,6 +2,7 @@ using Duende.IdentityServer;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace IdentityServerHost.Configurations.Authentication.OpenId;
 
@@ -24,6 +25,13 @@ public static class OpenIdConnectAuthenticationExtensions
             options.CallbackPath = provider.CallbackPath;
 
             options.ResponseType = "code";
+            // Explicit, not just the spec default for "code" alone: without this, a real IdP is free to
+            // reply via form_post instead of a query-string redirect. form_post is a cross-site POST back
+            // to this app, and SameSite=Lax (below) only rides along on cross-site *GET* navigation — a
+            // POST would silently drop the correlation/nonce cookies and surface as "Correlation failed."
+            // Forcing query keeps every hop a GET, matching PushedAuthorizationBehavior.Disable's same
+            // "everything visible, nothing implicit" reasoning just below.
+            options.ResponseMode = OpenIdConnectResponseMode.Query;
             options.UsePkce = true;
             options.RequireHttpsMetadata = false; // local teaching sample only — see docs/azure-entra-b2c-setup.md
             options.SaveTokens = true;

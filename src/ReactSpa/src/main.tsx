@@ -8,7 +8,7 @@ import App from './App.tsx'
 // concept (Authorization Code + PKCE), configured in the browser instead of on a server because there is
 // no server here for this app. See the README for why every field below differs from the MVC client's.
 const oidcConfig = {
-  authority: 'http://localhost:5000',
+  authority: 'https://localhost:5001',
   client_id: 'reactspa',
   redirect_uri: 'http://localhost:5173/callback',
   post_logout_redirect_uri: 'http://localhost:5173',

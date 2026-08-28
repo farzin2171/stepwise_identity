@@ -17,7 +17,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
            // /.well-known/openid-configuration from here once (then caches it), reads jwks_uri from it,
            // and validates every incoming token's signature against those keys — no shared secret, no
            // per-request round trip back to IdentityServerHost.
-           options.Authority = "http://localhost:5000";
+           options.Authority = "https://localhost:5001";
 
            // Local teaching sample only: the Authority above is plain HTTP. A real API requires HTTPS
            // everywhere — never disable this in real code.

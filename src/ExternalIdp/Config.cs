@@ -28,7 +28,7 @@ public static class Config
             RequirePkce = true,
             RequireConsent = false,
 
-            RedirectUris = { "http://localhost:5000/signin-external-idp" },
+            RedirectUris = { "https://localhost:5001/signin-external-idp" },
 
             AllowedScopes =
             {

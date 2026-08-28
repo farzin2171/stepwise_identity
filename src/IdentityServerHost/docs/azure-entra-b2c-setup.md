@@ -132,6 +132,7 @@ confirm you're really talking to Entra and not a cached ExternalIdp session, che
 | `AADSTS7000215: Invalid client secret provided` | You pasted the **Secret ID** instead of the **Value**, or the secret expired |
 | Claim missing, no error at all | Not requested via `Scope`, or `MapInboundClaims` behavior isn't what you expected — this fails silently, always check both |
 | Works once, then "correlation failed" on the next attempt | Same cookie relaxation this sample already needs for `external-idp` — confirm `CorrelationCookie`/`NonceCookie` `SameSite = Lax` is set on the new registration too |
+| "Correlation failed" every time, first attempt, cookie never appears in DevTools | Deeper than the row above — see [`correlation-failed-troubleshooting.md`](correlation-failed-troubleshooting.md) for the full investigation (a managed-browser policy blocking cookies over plain HTTP, the HTTPS migration it forced across the whole solution, and a follow-up `SameSite=Lax` vs. cross-site `form_post` issue) |
 
 ---
 

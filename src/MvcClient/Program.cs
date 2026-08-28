@@ -67,7 +67,7 @@ builder.Services.AddAuthentication(options =>
        .AddCookie("cookies")
        .AddOpenIdConnect("oidc", options =>
        {
-           options.Authority = "http://localhost:5000";
+           options.Authority = "https://localhost:5001";
            options.ClientId = "mvcclient";
            options.ClientSecret = "secret";
 

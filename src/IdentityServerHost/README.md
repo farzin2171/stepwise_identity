@@ -624,7 +624,12 @@ makes the ExternalIdp result a short-lived, intermediate fact that the callback 
 has to convert into a real session.
 
 Adding a second provider — a real Entra ID tenant, say — is now a config change, not a
-code change: see [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md).
+code change: see [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md). Wiring
+one up for real also surfaced a "Correlation failed" chain worth understanding in detail
+— a managed-browser policy blocking cookies over plain HTTP, the HTTPS migration that
+forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
+`form_post` issue underneath it — see
+[`docs/correlation-failed-troubleshooting.md`](docs/correlation-failed-troubleshooting.md).
 
 ### What's deliberately still a simplification
 

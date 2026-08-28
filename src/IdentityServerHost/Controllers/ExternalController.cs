@@ -26,7 +26,10 @@ public class ExternalController(TenantContext tenantContext, ExternalUserStore e
                 // The external IdP has no concept of "acme" or "globex" — this is the one piece of local
                 // context that has to survive the round trip through it, carried in the encrypted state
                 // parameter the same way returnUrl is.
-                ["tenant"] = tenantContext.TenantKey
+                ["tenant"] = tenantContext.TenantKey,
+                // Carried the same way so Callback() can tag the provisioned user with whichever scheme
+                // actually authenticated them, instead of assuming there's only ever one.
+                ["scheme"] = scheme
             }
         };
 
@@ -46,14 +49,15 @@ public class ExternalController(TenantContext tenantContext, ExternalUserStore e
         var name = result.Principal.FindFirstValue("name");
         var tenantKey = result.Properties!.Items["tenant"];
         var returnUrl = result.Properties.Items["returnUrl"];
+        var scheme = result.Properties.Items["scheme"];
 
         await HttpContext.SignOutAsync(IdentityServerConstants.ExternalCookieAuthenticationScheme);
 
         // Claim transformation: the external IdP's claims never reach IdentityServer's own principal
-        // as-is. "sub" here is ExternalIdp's own subject id (ext-1, meaningless to us) — the local
-        // identity is (scheme, externalSubjectId), same pairing concept as the real UserStore's
+        // as-is. "sub" here is the external provider's own subject id (meaningless to us on its own) —
+        // the local identity is (scheme, externalSubjectId), same pairing concept as the real UserStore's
         // FindByExternalProviderAsync((ProviderName, ProviderSubjectId)).
-        var localSubjectId = $"external:external-idp:{externalSubjectId}";
+        var localSubjectId = $"external:{scheme}:{externalSubjectId}";
 
         // Persisted separately from the principal below because IProfileService's context.Subject can't
         // see these claims later (see ExternalUserStore.cs) — this is the "first-login provisioning" step.
@@ -62,7 +66,7 @@ public class ExternalController(TenantContext tenantContext, ExternalUserStore e
         await HttpContext.SignInAsync(new IdentityServerUser(localSubjectId)
         {
             DisplayName = name,
-            IdentityProvider = "external-idp"
+            IdentityProvider = scheme
         });
 
         if (Url.IsLocalUrl(returnUrl))
