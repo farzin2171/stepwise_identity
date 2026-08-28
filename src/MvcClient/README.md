@@ -7,6 +7,16 @@ Phase 2 (the new `Client` entry, the login page IdentityServer needed, and three
 wire-level gotchas worth knowing) — this README covers what's specific to this side of
 the flow.
 
+This project also now carries a port of `Applications.Apply`'s (the real production MVC
+BFF) multi-tenancy infrastructure and its `IdentityGatewayApi`/`ExternalServicesApi`
+integration patterns — `ITenantContext`, tenant-aware login, a service-account token
+client, and a config-driven external-service registry with retry/circuit-breaker
+resilience. See
+[`docs/multitenancy-and-external-services.md`](docs/multitenancy-and-external-services.md)
+for the full, section-by-section write-up; this README's "Calling the API" and "Logging
+in as a specific tenant" sections below cover the parts that predate that port and still
+apply.
+
 ## Why "server-side client" matters
 
 This app runs on a server you control, so it can hold a `ClientSecret` the browser never
@@ -86,7 +96,7 @@ public async Task<IActionResult> CallApi()
     var accessToken = await HttpContext.GetTokenAsync("access_token");
 
     var client = httpClientFactory.CreateClient("SampleApi");
-    var request = new HttpRequestMessage(HttpMethod.Get, "/api/identity");
+    var request = new HttpRequestMessage(HttpMethod.Get, "/api/v1/identity");
     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
     var response = await client.SendAsync(request);
@@ -111,6 +121,17 @@ Three things make this work, none of them SampleApi-specific magic:
 This is the same pattern the real IdG's clients use to call the real IdG's protected
 APIs — a client that already has a user's access token from login reuses it, rather
 than asking for a *new* token per downstream call.
+
+The secure page now has a **second** button, *Call the API (as the service account)*,
+hitting `HomeController.CallApiAsServiceAccount()` — same endpoint, same
+`HttpClient`, but authenticated with a client-credentials token fetched via
+`ITokenClient` instead of the signed-in user's own token. No user is involved in that
+call at all, and SampleApi's response shows it: no `sub`, no `name`, no `email` — just
+`client_id: mvcclient-svc.acme`. See
+[`docs/multitenancy-and-external-services.md`](docs/multitenancy-and-external-services.md#3-externalservicesapi)
+for the full write-up of both patterns side by side, and for where
+`ExternalServicesApi`'s config-driven `ServiceDefinition` registry (which now supplies
+this `HttpClient`'s base address) and its Polly retry/circuit-breaker policies come from.
 
 [`../ReactSpa`](../ReactSpa) has the same button and calls the same endpoint, but
 notably **doesn't** need `AddHttpClient`, `GetTokenAsync`, or any server-side code at
@@ -141,14 +162,20 @@ Then browse to `http://localhost:5002` and try either link:
 
 - *Go to the secure page* — no tenant hint, works for any local user.
 - *Log in as Acme Corp* — sign in as `alice`/`alice` (succeeds, `tenant_id: acme` on the
-  claims table) or via the ExternalIdp button as `carol`/`carol` (needs `ExternalIdp`
-  running too — see [`../IdentityServerHost/README.md`](../IdentityServerHost/README.md#running-it)).
+  claims table, **Tenant (from `ITenantContext`): Acme Corp (acme)** shown above it) or
+  via the ExternalIdp button as `carol`/`carol` (needs `ExternalIdp` running too — see
+  [`../IdentityServerHost/README.md`](../IdentityServerHost/README.md#running-it)).
   Try `bob`/`bob` here to see the tenant-mismatch rejection.
 - *Log in as Globex Corporation* — sign in as `bob`/`bob` (succeeds); try `alice`/`alice`
   here instead for the same rejection from the other direction.
 
+Once signed in, try both API buttons — *Call the API (as me)* and *Call the API (as the
+service account)* — and compare the two responses (see "Calling the API" below).
+
 Prefer not to click through a browser? [`test-api.ps1`](../../test-api.ps1) (repo root)
-drives the login + API call over raw HTTP.
+drives the forwarded-user-token login + API call over raw HTTP;
+[`test-multitenancy-external-services.ps1`](../../test-multitenancy-external-services.ps1)
+drives the tenant-context and service-account additions.
 
 ## Logging in as a specific tenant (Phase 3)
 
@@ -167,7 +194,7 @@ public IActionResult LoginAsTenant(string tenant)
     var props = new AuthenticationProperties
     {
         RedirectUri = Url.Action(nameof(Secure)),
-        Items = { ["acr_values"] = $"tenant:{tenant}" }
+        Items = { ["tenant"] = tenant }
     };
     return Challenge(props, "oidc");
 }
@@ -182,9 +209,12 @@ options.Events = new OpenIdConnectEvents
 {
     OnRedirectToIdentityProvider = context =>
     {
-        if (context.Properties.Items.TryGetValue("acr_values", out var acrValues) && acrValues is not null)
+        if (context.Properties.Items.TryGetValue("tenant", out var tenantKey) && tenantKey is not null)
         {
-            context.ProtocolMessage.AcrValues = acrValues;
+            var identityGatewayConfiguration = context.HttpContext.RequestServices
+                .GetRequiredService<IOptions<IdentityGatewayConfiguration>>().Value;
+            context.ProtocolMessage.IssuerAddress = $"{identityGatewayConfiguration.GetRequestUri(tenantKey)}/connect/authorize";
+            context.ProtocolMessage.AcrValues = $"tenant:{tenantKey}";
         }
         return Task.CompletedTask;
     }
@@ -192,9 +222,12 @@ options.Events = new OpenIdConnectEvents
 ```
 
 `context.Properties` here is the same `AuthenticationProperties` object `Challenge(props, "oidc")`
-was called with — `LoginAsTenant` stashes the tenant in `Items`, and this event reads it
-back out right before the redirect to IdentityServerHost is built, and stamps it onto
-the actual protocol message.
+was called with — `LoginAsTenant` stashes the raw tenant key in `Items`, and this event
+reads it back out right before the redirect to IdentityServerHost is built. It now does
+two things with that key, not one: builds the `acr_values` hint (as before), and picks
+the tenant-correct Authority URL via `IdentityGatewayConfiguration.GetRequestUri` — see
+[`docs/multitenancy-and-external-services.md`](docs/multitenancy-and-external-services.md#a-tenant-aware-oidc-redirect)
+for what that's for.
 
 ### The PAR gotcha this surfaced
 
@@ -236,8 +269,6 @@ options.ClaimActions.MapUniqueJsonKey("tenant_id", "tenant_id");
 Any custom (non-standard) claim a real deployment wants surfaced through
 `GetClaimsFromUserInfoEndpoint` needs an explicit line like this — this is not specific
 to `tenant_id`.
-
-## About external IdP federation (Phase 4)
 
 ## About external IdP federation (Phase 4)
 

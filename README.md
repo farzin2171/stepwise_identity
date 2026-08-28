@@ -40,6 +40,22 @@ External providers are now config-driven — a first step toward how
   — step-by-step setup for a real Microsoft Entra ID tenant or Azure AD B2C tenant,
   updated for the config-driven wiring above.
 
+MvcClient also now carries a port of `Applications.Apply`'s (the real production MVC
+BFF) multi-tenancy infrastructure and its `IdentityGatewayApi`/`ExternalServicesApi`
+integration patterns:
+[src/MvcClient/docs/multitenancy-and-external-services.md](src/MvcClient/docs/multitenancy-and-external-services.md)
+— `ITenantContext`, tenant-aware login redirects, a per-tenant service-account token
+client, and a config-driven external-service registry with Polly retry/circuit-breaker
+resilience, each section compared against the real Apply code it was ported from.
+
+SampleApi now carries a port of `Services.Authorization`'s (the real production DIT
+authorization-decision service) identity/claims plumbing and API conventions:
+[src/SampleApi/docs/identity-context-and-conventions.md](src/SampleApi/docs/identity-context-and-conventions.md)
+— `IIdentityContext` (claims-only multi-tenancy for a caller with no browser at all),
+route versioning (`/api/v1/identity`), `ProblemDetails`, and a service-account-only
+endpoint filter, each section compared against the real `Services.Authorization` code
+it was ported from.
+
 Verification scripts (repo root):
 
 - [`test-phase2.ps1`](test-phase2.ps1) — the MvcClient login flow end-to-end, no
@@ -56,8 +72,18 @@ Verification scripts (repo root):
   Globex sees no external sign-in option, Acme does and can complete a real federated
   login through ExternalIdp (a separate server), ending with `name` from ExternalIdp and
   `tenant_id` from the original request.
+- [`test-multitenancy-external-services.ps1`](test-multitenancy-external-services.ps1) —
+  proves MvcClient's `ITenantContext` resolves from the `tenant_id` claim, and that
+  calling SampleApi with the forwarded user token vs. a service-account token
+  (`mvcclient-svc.acme`/`mvcclient-svc.globex`) produces meaningfully different claims.
+- [`test-sampleapi-identity-context.ps1`](test-sampleapi-identity-context.ps1) — proves
+  SampleApi's `IIdentityContext` resolves `IdentityType`/`TenantKey` differently for a
+  user token (the `tenant_id` claim) vs. a service-account token (parsed from the
+  `client_id` suffix instead), and that `ServiceAccountOnlyFilter` on
+  `DELETE /api/v1/admin/cache/{tenantKey}` really does discriminate by identity type
+  (401 with no token, 403 for a real user, 200 for a service account).
 
-None of the six drive real browser JavaScript — see
+None of the eight drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 

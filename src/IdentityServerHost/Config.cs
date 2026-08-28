@@ -38,7 +38,11 @@ public static class Config
         new ApiResource("api1", "Mini IdG Sample API")
         {
             Scopes = { "api1" },
-            UserClaims = { "name", "email" }
+            // "tenant_id" added for SampleApi's IIdentityContext port (see its
+            // Infrastructure/Identity/IdentityContext.cs) — without it here, the "tenant" IdentityResource's
+            // claim reaches the ID token (MvcClient's own login) but never the access token SampleApi
+            // actually validates, same reasoning as "name"/"email" below.
+            UserClaims = { "name", "email", "tenant_id" }
         }
     ];
 
@@ -93,6 +97,26 @@ public static class Config
                 "api1",
                 "tenant"
             }
+        },
+        // Apply counterpart: this is what its ServiceAccount/TokenClient pattern registers against — a
+        // client-credentials client PER TENANT, not one shared client. "mvcclient-svc" (MvcClient's
+        // ServiceAccount:ClientId in appsettings) plus the tenant key becomes the actual client_id sent to
+        // /connect/token, so revoking or rotating one tenant's service-account access never touches
+        // another's. No user is involved in this grant at all — see MvcClient's
+        // docs/multitenancy-and-external-services.md for what calls this.
+        new Client
+        {
+            ClientId = "mvcclient-svc.acme",
+            ClientSecrets = { new Secret("acme-svc-secret".Sha256()) },
+            AllowedGrantTypes = GrantTypes.ClientCredentials,
+            AllowedScopes = { "api1" }
+        },
+        new Client
+        {
+            ClientId = "mvcclient-svc.globex",
+            ClientSecrets = { new Secret("globex-svc-secret".Sha256()) },
+            AllowedGrantTypes = GrantTypes.ClientCredentials,
+            AllowedScopes = { "api1" }
         }
     ];
 }

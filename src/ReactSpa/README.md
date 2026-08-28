@@ -109,13 +109,13 @@ inside `AuthProvider`, right after the token endpoint responded, using the JWKS 
 ## Calling the API
 
 Like MvcClient, this app has a **Call the API** button that hits
-[`../SampleApi`](../SampleApi)'s `/api/identity` and shows the response — but every
+[`../SampleApi`](../SampleApi)'s `/api/v1/identity` and shows the response — but every
 piece of *how* it gets there is different, because there's no server here to do the
 work MvcClient's `HomeController.CallApi()` does.
 
 ```tsx
 async function callApi() {
-  const response = await fetch('http://localhost:5003/api/identity', {
+  const response = await fetch('http://localhost:5003/api/v1/identity', {
     headers: { Authorization: `Bearer ${auth.user?.access_token}` },
   })
   const body = await response.json()

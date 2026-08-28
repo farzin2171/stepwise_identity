@@ -263,7 +263,7 @@ public static IEnumerable<ApiResource> ApiResources =>
     new ApiResource("api1", "Mini IdG Sample API")
     {
         Scopes = { "api1" },
-        UserClaims = { "name", "email" }
+        UserClaims = { "name", "email", "tenant_id" }
     }
 ];
 ```
@@ -275,11 +275,16 @@ public static IEnumerable<ApiResource> ApiResources =>
   `aud` claim at all — there'd be nothing for an API's `ValidAudience` check to compare
   against. This is a common early-Duende-adopter trap: adding only an `ApiScope` and
   wondering why the API rejects every token.
-- **`UserClaims = { "name", "email" }`** — by default an access token carries only
-  protocol claims (`sub`, `scope`, `client_id`, ...), *not* the identity claims that
-  ended up in the ID token via the `profile` scope. An access token and an ID token
-  don't automatically share claims; this list is what copies `name`/`email` onto the
-  access token too, so SampleApi has something more interesting than `sub` to show.
+- **`UserClaims = { "name", "email", "tenant_id" }`** — by default an access token
+  carries only protocol claims (`sub`, `scope`, `client_id`, ...), *not* the identity
+  claims that ended up in the ID token via the `profile`/`tenant` scopes. An access
+  token and an ID token don't automatically share claims; this list is what copies
+  `name`/`email`/`tenant_id` onto the access token too. `tenant_id` was added for
+  SampleApi's own `IIdentityContext` port — without it here, `tenant_id` reached
+  MvcClient's ID token (and its own `ITenantContext`) but never SampleApi's access
+  token at all. See
+  [`../SampleApi/docs/identity-context-and-conventions.md`](../SampleApi/docs/identity-context-and-conventions.md)
+  for what SampleApi does with it.
 
 ### `Config.cs` — both clients now ask for `api1`
 
@@ -310,6 +315,35 @@ button — see `ReactSpa`'s README.
 Same pattern as every other `.AddInMemory...()` call in this file — a real IdG would
 call `.AddApiResources()`/`.AddApiScopes()` against the same SQL-backed configuration
 store as everything else (Phase 5 territory), not a different mechanism.
+
+### `Config.cs` — two more clients, with no user involved at all
+
+```csharp
+new Client
+{
+    ClientId = "mvcclient-svc.acme",
+    ClientSecrets = { new Secret("acme-svc-secret".Sha256()) },
+    AllowedGrantTypes = GrantTypes.ClientCredentials,
+    AllowedScopes = { "api1" }
+},
+new Client
+{
+    ClientId = "mvcclient-svc.globex",
+    ClientSecrets = { new Secret("globex-svc-secret".Sha256()) },
+    AllowedGrantTypes = GrantTypes.ClientCredentials,
+    AllowedScopes = { "api1" }
+}
+```
+
+Added when MvcClient ported `Applications.Apply`'s service-account token pattern — see
+[`MvcClient/docs/multitenancy-and-external-services.md`](../MvcClient/docs/multitenancy-and-external-services.md).
+Every other client in this file uses `GrantTypes.Code` — a human logs in, a browser is
+involved, tokens come back with a `sub`. `GrantTypes.ClientCredentials` is different in
+kind, not just configuration: **no user, no browser, no redirect** — just a direct
+server-to-server POST to `/connect/token` trading a client secret for a token. Two
+clients, one per tenant, each with its own secret, is the load-bearing detail: it means
+revoking or rotating Acme's service-account access can never accidentally affect
+Globex's.
 
 ---
 

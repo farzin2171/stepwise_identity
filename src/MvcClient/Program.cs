@@ -1,16 +1,61 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.Extensions.Options;
+using MvcClient.Infrastructure.Configuration;
+using MvcClient.Infrastructure.Externals;
+using MvcClient.Infrastructure.MultiTenant;
+using Polly;
+using Polly.Extensions.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
 
-// Named client for calling SampleApi. HomeController attaches the current user's access token to every
-// request made through this client — see Controllers/HomeController.cs.
-builder.Services.AddHttpClient("SampleApi", client =>
-{
-    client.BaseAddress = new Uri("http://localhost:5003");
-});
+// Bind targets for the two config sections ported from Applications.Apply — see
+// docs/multitenancy-and-external-services.md for the full field-by-field reference.
+builder.Services.Configure<IdentityGatewayConfiguration>(builder.Configuration.GetSection("IdentityGatewayApi"));
+builder.Services.Configure<ExternalServicesConfiguration>(builder.Configuration.GetSection("ExternalServicesApi"));
+
+// Scoped: one instance per request, written once by TenantResolutionMiddleware, read by everything
+// downstream. See Infrastructure/MultiTenant/ITenantContext.cs.
+builder.Services.AddScoped<ITenantContext, TenantContext>();
+
+// Backs TokenClient's cache of service-account tokens — see Infrastructure/Externals/TokenClient.cs.
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<ITokenClient, TokenClient>();
+
+// Same Polly retry + circuit-breaker shape Apply wraps around every one of its external HTTP clients
+// (Infrastructure/Http/ServiceCollectionExtensions.cs there) — applied here to both named clients this
+// app uses. A transient failure gets retried with exponential backoff; enough consecutive failures trip
+// the breaker and fail fast instead of piling up slow, doomed requests against a service that's down.
+static IAsyncPolicy<HttpResponseMessage> RetryPolicy() =>
+    HttpPolicyExtensions.HandleTransientHttpError()
+        .WaitAndRetryAsync(2, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)));
+
+static IAsyncPolicy<HttpResponseMessage> CircuitBreakerPolicy() =>
+    HttpPolicyExtensions.HandleTransientHttpError()
+        .CircuitBreakerAsync(3, TimeSpan.FromSeconds(30));
+
+// Named client for calling SampleApi. Base address now comes from ExternalServicesApi's
+// ServiceDefinitions["SampleApi"] instead of being hardcoded here — see
+// Infrastructure/Configuration/ExternalServicesConfiguration.cs. HomeController attaches a Bearer token
+// to every request made through this client (either the signed-in user's own token, or a service-account
+// token from ITokenClient — see Controllers/HomeController.cs for both).
+builder.Services.AddHttpClient("SampleApi", (services, client) =>
+       {
+           var externalServices = services.GetRequiredService<IOptions<ExternalServicesConfiguration>>().Value;
+           var serviceDefinition = externalServices.GetServiceDefinition("SampleApi");
+           client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
+       })
+       .AddPolicyHandler(RetryPolicy())
+       .AddPolicyHandler(CircuitBreakerPolicy());
+
+// Named client for TokenClient's client-credentials requests to IdentityServerHost's /connect/token.
+// Same resilience treatment as SampleApi — a flaky token endpoint is just as much a "this call might
+// transiently fail" situation as a flaky downstream API.
+builder.Services.AddHttpClient("token")
+       .AddPolicyHandler(RetryPolicy())
+       .AddPolicyHandler(CircuitBreakerPolicy());
 
 builder.Services.AddAuthentication(options =>
        {
@@ -94,14 +139,25 @@ builder.Services.AddAuthentication(options =>
            // The OIDC handler has no built-in "AcrValues" challenge property in this version — the
            // supported way to add a parameter the handler doesn't know about is this event, which runs
            // right before the redirect to IdentityServerHost is issued. See
-           // HomeController.LoginAsTenant() for where the "acr_values" item actually gets set.
+           // HomeController.LoginAsTenant() for where the "tenant" item actually gets set.
+           //
+           // Apply counterpart: Infrastructure/Authentication/Functions/OpenIdConnectFunctions.cs's
+           // RedirectToIdentityProviderFunction — same two responsibilities (pick the tenant-correct
+           // Authority URL, stamp acr_values=tenant:{key}), same event hook, just triggered here by an
+           // explicit button click instead of being automatic on every challenge (see this project's
+           // README for why).
            options.Events = new OpenIdConnectEvents
            {
                OnRedirectToIdentityProvider = context =>
                {
-                   if (context.Properties.Items.TryGetValue("acr_values", out var acrValues) && acrValues is not null)
+                   if (context.Properties.Items.TryGetValue("tenant", out var tenantKey) && tenantKey is not null)
                    {
-                       context.ProtocolMessage.AcrValues = acrValues;
+                       var identityGatewayConfiguration = context.HttpContext.RequestServices
+                           .GetRequiredService<IOptions<IdentityGatewayConfiguration>>().Value;
+                       var requestUri = identityGatewayConfiguration.GetRequestUri(tenantKey);
+
+                       context.ProtocolMessage.IssuerAddress = $"{requestUri}/connect/authorize";
+                       context.ProtocolMessage.AcrValues = $"tenant:{tenantKey}";
                    }
 
                    return Task.CompletedTask;
@@ -114,6 +170,15 @@ var app = builder.Build();
 app.UseStaticFiles();
 app.UseRouting();
 app.UseAuthentication();
+
+// Must run after UseAuthentication() (it reads HttpContext.User) and before UseAuthorization()/endpoint
+// execution (so RequireTenantAttribute and any controller code see a populated ITenantContext by the
+// time they run) — same ordering constraint Apply's own UseMultitenancy() has relative to
+// UseAuthentication()/UseAuthorization(), just flipped: Apply resolves tenant BEFORE authentication
+// (from the hostname, so it's available for the OIDC challenge itself); this app can only resolve tenant
+// AFTER authentication, because the claim it reads doesn't exist until IdentityServerHost issues it.
+app.UseMiddleware<TenantResolutionMiddleware>();
+
 app.UseAuthorization();
 
 app.MapDefaultControllerRoute();

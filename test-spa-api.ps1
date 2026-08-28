@@ -65,8 +65,8 @@ if ($resp.StatusCode -ne 200) { throw "Token endpoint rejected the public client
 $accessToken = ($resp.Content | ConvertFrom-Json).access_token
 Write-Host "   Got an access token (no client secret sent)." -ForegroundColor Green
 
-Write-Host "2. CORS preflight for GET /api/identity from the SPA's origin..."
-$preflight = [System.Net.Http.HttpRequestMessage]::new("OPTIONS", "http://localhost:5003/api/identity")
+Write-Host "2. CORS preflight for GET /api/v1/identity from the SPA's origin..."
+$preflight = [System.Net.Http.HttpRequestMessage]::new("OPTIONS", "http://localhost:5003/api/v1/identity")
 $preflight.Headers.Add("Origin", "http://localhost:5173")
 $preflight.Headers.Add("Access-Control-Request-Method", "GET")
 $preflight.Headers.Add("Access-Control-Request-Headers", "authorization")
@@ -76,7 +76,7 @@ if (-not $allowOrigin -or $allowOrigin[0] -ne "http://localhost:5173") { throw "
 Write-Host "   SampleApi's CORS policy allows localhost:5173." -ForegroundColor Green
 
 Write-Host "3. The actual cross-origin GET, exactly as the browser's fetch() would send it..."
-$apiRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5003/api/identity")
+$apiRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5003/api/v1/identity")
 $apiRequest.Headers.Add("Origin", "http://localhost:5173")
 $apiRequest.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $accessToken)
 $apiResp = $client.SendAsync($apiRequest).GetAwaiter().GetResult()

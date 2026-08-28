@@ -8,6 +8,13 @@ token *issuer* (IdentityServerHost) or a token *consumer that logs a human in*
 (MvcClient). SampleApi is the third role: a service that a client calls *on behalf of*
 a logged-in user, using a token that user's login produced.
 
+SampleApi also now carries a port of `Services.Authorization`'s (the real production
+DIT authorization-decision service) identity/claims plumbing and API conventions:
+[`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md)
+— `IIdentityContext`, claims-only multi-tenancy for a caller with no browser, route
+versioning, `ProblemDetails`, and a service-account-only endpoint filter, each section
+compared against the real code it was ported from.
+
 ```
 Browser  ↔  MvcClient (:5002)  —Bearer token (server-to-server)→  SampleApi (:5003)
 Browser  ↔  ReactSpa (:5173)   —Bearer token (browser fetch())──→  SampleApi (:5003)
@@ -60,21 +67,47 @@ expired — that was issued for some *other* API still fails this check, because
 puts a `scope` claim per requested scope in the token and this one won't have `api1`
 among them.
 
-## The one endpoint
+## The identity endpoint — now versioned
 
 ```csharp
-app.MapGet("/api/identity", (HttpContext ctx) => Results.Ok(new
+var api = app.MapGroup("/api/v{version:apiVersion}").WithApiVersionSet(versionSet).HasApiVersion(1.0);
+
+api.MapGet("/identity", (HttpContext ctx, IIdentityContext identityContext) => Results.Ok(new
 {
     message = "...",
+    identity = new { identityContext.IdentityType, identityContext.Subject, identityContext.ClientId, identityContext.TenantKey },
     claims = ctx.User.Claims.Select(c => new { c.Type, c.Value })
 })).RequireAuthorization("ApiScope");
 ```
 
-It just echoes back every claim the incoming access token carried, once validation and
-the scope policy both pass. That's deliberate: the point of this project isn't the
-business logic (there is none) — it's proving, end to end, that a token minted by
-IdentityServerHost for a login that happened in MvcClient is independently verifiable by
-a completely separate process that has never talked to either of them before.
+The route is `/api/v1/identity` now, not `/api/identity` — see
+[`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#2-api-versioning--aspversioninghttp)
+for the versioning port this came from. It still just echoes back every claim the
+incoming access token carried, once validation and the scope policy both pass — that's
+deliberate: the point of this project isn't the business logic (there is none) — it's
+proving, end to end, that a token minted by IdentityServerHost for a login that
+happened in MvcClient is independently verifiable by a completely separate process
+that has never talked to either of them before. The one addition, `identity`, is a
+port of `Services.Authorization`'s `IIdentityContext` — see the doc above for how it
+tells a real user and a service-account caller apart, and how it resolves "which
+tenant" purely from claims, with no hostname or UI involved at all.
+
+## The other endpoint — service accounts only
+
+```csharp
+api.MapDelete("/admin/cache/{tenantKey}", (string tenantKey) => Results.Ok(new
+{
+    message = $"Cache cleared for tenant '{tenantKey}' (simulated — this sample has no real cache)."
+})).AddEndpointFilter<ServiceAccountOnlyFilter>();
+```
+
+Modeled on `Services.Authorization`'s real cache-invalidation endpoint — a
+service-to-service call, never a human's. `ServiceAccountOnlyFilter` decides who gets
+through entirely on its own, without the formal `[Authorize]`/policy system: no token
+at all gets a `401`, a real user's own token (however validly authenticated) gets a
+`403`, and only a client-credentials token gets through to the `200`. See the doc above
+for the full comparison, including a `ProblemDetails` boundary this port surfaced while
+testing it.
 
 ## Why `name` and `email` show up in the response
 
@@ -129,9 +162,16 @@ cd src/SampleApi
 dotnet run --urls http://localhost:5003
 
 # in another terminal
-curl -i http://localhost:5003/api/identity
+curl -i http://localhost:5003/api/v1/identity
 # HTTP/1.1 401 Unauthorized
 ```
+
+Prefer not to click through a browser? Standalone against SampleApi + IdentityServerHost only:
+[`../../test-sampleapi-identity-context.ps1`](../../test-sampleapi-identity-context.ps1)
+(repo root) drives a user login and a service-account token exchange, then calls both
+endpoints above with each — see
+[`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#running-it)
+for exactly what it proves.
 
 ## What's deliberately missing (and why)
 
@@ -142,3 +182,8 @@ curl -i http://localhost:5003/api/identity
 - **Refresh / introspection support.** This API only validates self-contained JWTs. A
   real IdG-protected API sometimes also needs reference-token introspection for
   short-lived, revocable tokens — out of scope for this sample.
+- **`Services.Authorization`'s actual business logic** (the `Authorize`/`Evaluate`
+  endpoints, its SQL Server + Redis policy store, the dynamic
+  `IAuthorizationPolicyProvider` that resolves any policy name via a remote call) — see
+  [`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#what-s-deliberately-not-ported)
+  for the full list of what was and wasn't ported from it.
