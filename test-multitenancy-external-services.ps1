@@ -33,12 +33,12 @@ function Follow($uri, $method = "GET", $formFields = $null) {
 }
 
 Write-Host "1. Log in as alice on Acme via MvcClient..."
-$resp = Follow "http://localhost:5002/Home/LoginAsTenant?tenant=acme"
+$resp = Follow "https://localhost:5006/Home/LoginAsTenant?tenant=acme"
 $returnUrl = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, 'name="ReturnUrl" value="([^"]*)"').Groups[1].Value)
 $verToken  = [regex]::Match($resp.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]*)"').Groups[1].Value
 if (-not $returnUrl -or -not $verToken) { throw "Could not parse ReturnUrl or antiforgery token from login page" }
 $body = @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken }
-$resp = Follow "http://localhost:5000/Account/Login" "POST" $body
+$resp = Follow "https://localhost:5001/Account/Login" "POST" $body
 $formAction = [regex]::Match($resp.Content, "action=['""]([^'""]*)['""]")
 if ($formAction.Success) {
     $action = [System.Net.WebUtility]::HtmlDecode($formAction.Groups[1].Value)
@@ -54,7 +54,7 @@ Write-Host "   PASS - logged in, ITenantContext resolved to Acme Corp (acme) on 
 
 Write-Host ""
 Write-Host "2. Call the API as ME (forwarded user token)..."
-$resp = Follow "http://localhost:5002/Home/CallApi"
+$resp = Follow "https://localhost:5006/Home/CallApi"
 if ($resp.Content -notmatch "HTTP 200") { throw "Expected HTTP 200, got: $($resp.Content.Substring(0,[Math]::Min(400,$resp.Content.Length)))" }
 if ($resp.Content -notmatch "signed-in user") { throw "Expected the 'forwarded user token' label" }
 if ($resp.Content -notmatch "Alice Anderson") { throw "Expected Alice's name claim via the forwarded user token" }
@@ -62,7 +62,7 @@ Write-Host "   PASS - forwarded-user-token call succeeded, shows Alice Anderson.
 
 Write-Host ""
 Write-Host "3. Call the API as the SERVICE ACCOUNT (client-credentials token)..."
-$resp = Follow "http://localhost:5002/Home/CallApiAsServiceAccount"
+$resp = Follow "https://localhost:5006/Home/CallApiAsServiceAccount"
 if ($resp.Content -notmatch "HTTP 200") { throw "Expected HTTP 200, got: $($resp.Content.Substring(0,[Math]::Min(600,$resp.Content.Length)))" }
 if ($resp.Content -notmatch "service-account token for tenant") { throw "Expected the service-account token label" }
 if ($resp.Content -notmatch "acme") { throw "Expected tenant 'acme' in the label" }

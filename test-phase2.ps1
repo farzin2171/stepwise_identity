@@ -36,7 +36,7 @@ function Follow($uri, $method = "GET", $formFields = $null) {
 }
 
 Write-Host "1. GET the protected page while logged out..."
-$resp = Follow "http://localhost:5002/Home/Secure"
+$resp = Follow "https://localhost:5006/Home/Secure"
 if ($resp.Content -notmatch "Sign in") { throw "Expected to land on the login page, got something else: $($resp.Content.Substring(0, [Math]::Min(300, $resp.Content.Length)))" }
 Write-Host "   Landed on the IdentityServer login page as expected." -ForegroundColor Green
 
@@ -52,7 +52,7 @@ $body = @{
     ReturnUrl = $returnUrl
     __RequestVerificationToken = $verToken
 }
-$resp = Follow "http://localhost:5000/Account/Login" "POST" $body
+$resp = Follow "https://localhost:5001/Account/Login" "POST" $body
 
 Write-Host "3. Complete the response_mode=form_post hop (no browser JS here, so submit it by hand)..."
 $formAction = [regex]::Match($resp.Content, "action=['""]([^'""]*)['""]").Groups[1].Value

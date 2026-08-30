@@ -1,20 +1,30 @@
 using IdentityServerHost;
 using IdentityServerHost.Configurations.Authentication;
 using IdentityServerHost.Configurations.Authentication.Helpers;
+using IdentityServerHost.Data;
 using IdentityServerHost.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Same migrations assembly for all three contexts, and the one connection string that
+// backs all of them — IdG counterpart: "persistence:serviceDb" section, bound to a
+// SqlServerOptions type from an internal DIT package. This sample reads it directly, no
+// custom options-binding layer needed for a single connection string.
+var migrationsAssembly = typeof(Program).Assembly.GetName().Name;
+var connectionString = builder.Configuration.GetConnectionString("IdentityServer");
 
 // Needed starting this phase: IdentityServer redirects here (/Account/Login) whenever an authorize request
 // can't be completed silently. Nothing before Phase 2 needed a UI, because nothing before Phase 2 could
 // reach a state where IdentityServer had to ask a human anything.
 builder.Services.AddControllersWithViews();
 builder.Services.AddScoped<TenantContext>();
-// Shared across every request for the process's lifetime — see ExternalUserStore.cs for why a scoped or
-// transient lifetime wouldn't work here (first-login provisioning has to survive past the request that
-// did it, for the token-issuance request that follows to see it).
-builder.Services.AddSingleton<ExternalUserStore>();
+// Phase 5: backed by SQL Server now (UserDbContext), not a process-lifetime dictionary — so this can go
+// back to the default scoped lifetime instead of AddSingleton<>(). See ExternalUserStore.cs.
+builder.Services.AddDbContext<UserDbContext>(options =>
+    options.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly)));
+builder.Services.AddScoped<ExternalUserStore>();
 
 // Bind target for the "ExternalProviders" config section — see appsettings.Development.json and
 // docs/external-providers-configuration.md. IdG counterpart: the same section, loaded the same way, in
@@ -34,10 +44,23 @@ builder.Services.AddIdentityServer(options =>
            // one cookie the blanket fix below was previously (incorrectly) documented as covering.
            options.Authentication.CheckSessionCookieSameSiteMode = SameSiteMode.Lax;
        })
-       .AddInMemoryIdentityResources(Config.IdentityResources)
-       .AddInMemoryApiScopes(Config.ApiScopes)
-       .AddInMemoryApiResources(Config.ApiResources)
-       .AddInMemoryClients(Config.Clients)
+       // Phase 5: Duende's own stock EF stores, SQL Server-backed — the same types the real IdG uses,
+       // no custom IClientStore/IResourceStore (it doesn't have those either; only a custom
+       // IdentityProviderStore, not yet ported here). Config.cs's lists are now seed data
+       // (Data/SeedData.cs), not the store itself — Duende reads Clients/Resources from the database
+       // from here on.
+       .AddConfigurationStore(options =>
+       {
+           options.ConfigureDbContext = b =>
+               b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly));
+       })
+       // Persisted grants (refresh tokens, authorization codes, device codes, consent) — previously
+       // in-memory and gone on every restart along with everything else Phase 5 fixes.
+       .AddOperationalStore(options =>
+       {
+           options.ConfigureDbContext = b =>
+               b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly));
+       })
        .AddDeveloperSigningCredential()
        // Registers TestUserStore in DI (AccountController takes a dependency on it) and a default
        // IResourceOwnerPasswordValidator/IProfileService pair backed by the same in-memory list. The real
@@ -69,6 +92,11 @@ builder.Services.AddAuthentication()
        .AddExternalProvidersFromFile(builder.Configuration);
 
 var app = builder.Build();
+
+// Applies pending migrations for all three DbContexts and seeds Config.cs's Clients/Resources into
+// ConfigurationDbContext if it's empty — runs on every startup, idempotent. See Data/SeedData.cs for why
+// this stands in for the real IdG's (since-deleted) data-ingestion tool.
+SeedData.EnsureSeedData(app.Services);
 
 app.UseStaticFiles();
 app.UseRouting();

@@ -47,7 +47,7 @@ $codeVerifier = Base64UrlEncode $verifierBytes
 $challengeBytes = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::ASCII.GetBytes($codeVerifier))
 $codeChallenge = Base64UrlEncode $challengeBytes
 
-$authorizeUrl = "http://localhost:5000/connect/authorize?client_id=reactspa&redirect_uri=" + `
+$authorizeUrl = "https://localhost:5001/connect/authorize?client_id=reactspa&redirect_uri=" + `
     [uri]::EscapeDataString("http://localhost:5173/callback") + `
     "&response_type=code&response_mode=query&scope=" + [uri]::EscapeDataString("openid profile api1 tenant") + `
     "&acr_values=" + [uri]::EscapeDataString("tenant:acme") + `
@@ -55,11 +55,11 @@ $authorizeUrl = "http://localhost:5000/connect/authorize?client_id=reactspa&redi
 $resp = Follow $authorizeUrl
 $returnUrl = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, 'name="ReturnUrl" value="([^"]*)"').Groups[1].Value)
 $verToken  = [regex]::Match($resp.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]*)"').Groups[1].Value
-$resp = Follow "http://localhost:5000/Account/Login" "POST" @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken } "localhost:5173"
+$resp = Follow "https://localhost:5001/Account/Login" "POST" @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken } "localhost:5173"
 if ($resp.Uri -notmatch "code=") { throw "Expected the final redirect to carry ?code=..., landed on: $($resp.Uri)" }
 $code = [System.Web.HttpUtility]::ParseQueryString(([uri]$resp.Uri).Query)["code"]
 
-$resp = Follow "http://localhost:5000/connect/token" "POST" @{
+$resp = Follow "https://localhost:5001/connect/token" "POST" @{
     grant_type = "authorization_code"; code = $code; redirect_uri = "http://localhost:5173/callback"
     client_id = "reactspa"; code_verifier = $codeVerifier
 }
@@ -68,7 +68,7 @@ $userToken = ($resp.Content | ConvertFrom-Json).access_token
 Write-Host "   Got alice's access token." -ForegroundColor Green
 
 Write-Host "2. GET /api/v1/identity with alice's token..."
-$req = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5003/api/v1/identity")
+$req = [System.Net.Http.HttpRequestMessage]::new("GET", "https://localhost:5007/api/v1/identity")
 $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $userToken)
 $resp = $client.SendAsync($req).GetAwaiter().GetResult()
 $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
@@ -79,14 +79,14 @@ if (-not $body.identity.subject) { throw "Expected a non-null subject for a user
 Write-Host "   PASS - IdentityType=User, TenantKey=acme (resolved from the 'tenant_id' claim)." -ForegroundColor Green
 
 Write-Host "3. Get a service-account token for mvcclient-svc.acme (client_credentials, no user at all)..."
-$resp = Follow "http://localhost:5000/connect/token" "POST" @{
+$resp = Follow "https://localhost:5001/connect/token" "POST" @{
     grant_type = "client_credentials"; client_id = "mvcclient-svc.acme"; client_secret = "acme-svc-secret"; scope = "api1"
 }
 if ($resp.StatusCode -ne 200) { throw "Token endpoint rejected the service account: $($resp.Content)" }
 $svcToken = ($resp.Content | ConvertFrom-Json).access_token
 
 Write-Host "4. GET /api/v1/identity with the service-account token..."
-$req = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5003/api/v1/identity")
+$req = [System.Net.Http.HttpRequestMessage]::new("GET", "https://localhost:5007/api/v1/identity")
 $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $svcToken)
 $resp = $client.SendAsync($req).GetAwaiter().GetResult()
 $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
@@ -98,7 +98,7 @@ if ($body.identity.tenantKey -ne "acme") { throw "Expected tenantKey=acme (parse
 Write-Host "   PASS - IdentityType=Service, TenantKey=acme (parsed from client_id, no tenant_id claim exists)." -ForegroundColor Green
 
 Write-Host "5. DELETE /api/v1/admin/cache/acme with NO token (ServiceAccountOnlyFilter should 401)..."
-$req = [System.Net.Http.HttpRequestMessage]::new("DELETE", "http://localhost:5003/api/v1/admin/cache/acme")
+$req = [System.Net.Http.HttpRequestMessage]::new("DELETE", "https://localhost:5007/api/v1/admin/cache/acme")
 $resp = $client.SendAsync($req).GetAwaiter().GetResult()
 if ([int]$resp.StatusCode -ne 401) { throw "Expected 401, got $([int]$resp.StatusCode)" }
 $contentType = $resp.Content.Headers.ContentType.MediaType
@@ -108,14 +108,14 @@ if ($problemBody.status -ne 401) { throw "Expected problem details 'status' fiel
 Write-Host "   PASS - 401, application/problem+json body (AddProblemDetails() at work)." -ForegroundColor Green
 
 Write-Host "6. DELETE /api/v1/admin/cache/acme with alice's USER token (ServiceAccountOnlyFilter should 403)..."
-$req = [System.Net.Http.HttpRequestMessage]::new("DELETE", "http://localhost:5003/api/v1/admin/cache/acme")
+$req = [System.Net.Http.HttpRequestMessage]::new("DELETE", "https://localhost:5007/api/v1/admin/cache/acme")
 $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $userToken)
 $resp = $client.SendAsync($req).GetAwaiter().GetResult()
 if ([int]$resp.StatusCode -ne 403) { throw "Expected 403, got $([int]$resp.StatusCode)" }
 Write-Host "   PASS - a real user's own token is forbidden from a service-account-only endpoint." -ForegroundColor Green
 
 Write-Host "7. DELETE /api/v1/admin/cache/acme with the SERVICE-ACCOUNT token (ServiceAccountOnlyFilter should 200)..."
-$req = [System.Net.Http.HttpRequestMessage]::new("DELETE", "http://localhost:5003/api/v1/admin/cache/acme")
+$req = [System.Net.Http.HttpRequestMessage]::new("DELETE", "https://localhost:5007/api/v1/admin/cache/acme")
 $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $svcToken)
 $resp = $client.SendAsync($req).GetAwaiter().GetResult()
 $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()

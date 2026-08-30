@@ -43,7 +43,7 @@ function Follow($uri, $method = "GET", $formFields = $null, $stopAtHost = $null)
 }
 
 Write-Host "1. Log in as alice as the reactspa public client, requesting 'openid profile api1'..."
-$authorizeUrl = "http://localhost:5000/connect/authorize?client_id=reactspa&redirect_uri=" + `
+$authorizeUrl = "https://localhost:5001/connect/authorize?client_id=reactspa&redirect_uri=" + `
     [uri]::EscapeDataString("http://localhost:5173/callback") + `
     "&response_type=code&response_mode=query&scope=" + [uri]::EscapeDataString("openid profile api1") + `
     "&code_challenge=$codeChallenge&code_challenge_method=S256&state=teststate123"
@@ -52,12 +52,12 @@ if ($resp.Content -notmatch "Sign in") { throw "Expected the login page: $($resp
 $returnUrl = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, 'name="ReturnUrl" value="([^"]*)"').Groups[1].Value)
 $verToken  = [regex]::Match($resp.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]*)"').Groups[1].Value
 if (-not $returnUrl -or -not $verToken) { throw "Could not parse ReturnUrl or antiforgery token from login page" }
-$resp = Follow "http://localhost:5000/Account/Login" "POST" @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken } "localhost:5173"
+$resp = Follow "https://localhost:5001/Account/Login" "POST" @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken } "localhost:5173"
 if ($resp.Uri -notmatch "code=") { throw "Expected the final redirect to carry ?code=..., landed on: $($resp.Uri)" }
 $code = [System.Web.HttpUtility]::ParseQueryString(([uri]$resp.Uri).Query)["code"]
 Write-Host "   Got an authorization code." -ForegroundColor Green
 
-$resp = Follow "http://localhost:5000/connect/token" "POST" @{
+$resp = Follow "https://localhost:5001/connect/token" "POST" @{
     grant_type = "authorization_code"; code = $code; redirect_uri = "http://localhost:5173/callback"
     client_id = "reactspa"; code_verifier = $codeVerifier
 }
@@ -66,7 +66,7 @@ $accessToken = ($resp.Content | ConvertFrom-Json).access_token
 Write-Host "   Got an access token (no client secret sent)." -ForegroundColor Green
 
 Write-Host "2. CORS preflight for GET /api/v1/identity from the SPA's origin..."
-$preflight = [System.Net.Http.HttpRequestMessage]::new("OPTIONS", "http://localhost:5003/api/v1/identity")
+$preflight = [System.Net.Http.HttpRequestMessage]::new("OPTIONS", "https://localhost:5007/api/v1/identity")
 $preflight.Headers.Add("Origin", "http://localhost:5173")
 $preflight.Headers.Add("Access-Control-Request-Method", "GET")
 $preflight.Headers.Add("Access-Control-Request-Headers", "authorization")
@@ -76,7 +76,7 @@ if (-not $allowOrigin -or $allowOrigin[0] -ne "http://localhost:5173") { throw "
 Write-Host "   SampleApi's CORS policy allows localhost:5173." -ForegroundColor Green
 
 Write-Host "3. The actual cross-origin GET, exactly as the browser's fetch() would send it..."
-$apiRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5003/api/v1/identity")
+$apiRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "https://localhost:5007/api/v1/identity")
 $apiRequest.Headers.Add("Origin", "http://localhost:5173")
 $apiRequest.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $accessToken)
 $apiResp = $client.SendAsync($apiRequest).GetAwaiter().GetResult()

@@ -42,7 +42,7 @@ function Follow($uri, $method = "GET", $formFields = $null, $stopAtHost = $null)
 }
 
 Write-Host "1. GET /connect/authorize for the public client (no client secret anywhere)..."
-$authorizeUrl = "http://localhost:5000/connect/authorize?client_id=reactspa&redirect_uri=" + `
+$authorizeUrl = "https://localhost:5001/connect/authorize?client_id=reactspa&redirect_uri=" + `
     [uri]::EscapeDataString("http://localhost:5173/callback") + `
     "&response_type=code&response_mode=query&scope=" + [uri]::EscapeDataString("openid profile") + `
     "&code_challenge=$codeChallenge&code_challenge_method=S256&state=teststate123"
@@ -56,7 +56,7 @@ if (-not $returnUrl -or -not $verToken) { throw "Could not parse ReturnUrl or an
 
 Write-Host "2. Log in as alice, stop at the redirect back to localhost:5173 (never call it - nothing's serving that route in this script)..."
 $body = @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken }
-$resp = Follow "http://localhost:5000/Account/Login" "POST" $body "localhost:5173"
+$resp = Follow "https://localhost:5001/Account/Login" "POST" $body "localhost:5173"
 if ($resp.Uri -notmatch "code=") { throw "Expected the final redirect to carry ?code=... (response_mode=query), landed on: $($resp.Uri)" }
 $code = [System.Web.HttpUtility]::ParseQueryString(([uri]$resp.Uri).Query)["code"]
 Write-Host "   Got an authorization code: $($code.Substring(0, 12))..." -ForegroundColor Green
@@ -69,13 +69,13 @@ $tokenBody = @{
     client_id = "reactspa"
     code_verifier = $codeVerifier
 }
-$resp = Follow "http://localhost:5000/connect/token" "POST" $tokenBody
+$resp = Follow "https://localhost:5001/connect/token" "POST" $tokenBody
 if ($resp.StatusCode -ne 200) { throw "Token endpoint rejected the public client: $($resp.Content)" }
 if ($resp.Content -notmatch '"access_token"') { throw "No access_token in response: $($resp.Content)" }
 Write-Host "   Token issued with no client secret sent - RequireClientSecret=false confirmed." -ForegroundColor Green
 
 Write-Host "4. CORS preflight from the SPA's origin..."
-$preflight = [System.Net.Http.HttpRequestMessage]::new("OPTIONS", "http://localhost:5000/connect/token")
+$preflight = [System.Net.Http.HttpRequestMessage]::new("OPTIONS", "https://localhost:5001/connect/token")
 $preflight.Headers.Add("Origin", "http://localhost:5173")
 $preflight.Headers.Add("Access-Control-Request-Method", "POST")
 $corsResp = $client.SendAsync($preflight).GetAwaiter().GetResult()

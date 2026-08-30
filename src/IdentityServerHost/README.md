@@ -10,8 +10,11 @@ actually is under all its production scaffolding.
 2. Clients ✓ (MVC + React)
 3. Multi-tenancy ✓
 4. External identity providers ✓
-5. Persistence (SQL Server instead of in-memory) ← next
-6. Data ingestion / config tooling
+5. Persistence (SQL Server instead of in-memory) ✓
+6. Data ingestion / config tooling ← next
+7. DIT external-service calls (TenantClient, UserClient)
+8. Signing-key management (Key Vault instead of a developer credential)
+9. IdentityProviderStore (DB-persisted external-provider config)
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -94,7 +97,7 @@ Core MVC app — and traces one real, complete **Authorization Code + PKCE** flo
 both applications.
 
 ```
-Browser  ↔  MvcClient (:5002)  —code + PKCE→  IdentityServerHost (:5000)
+Browser  ↔  MvcClient (:5006)  —code + PKCE→  IdentityServerHost (:5001)
 ```
 
 **MvcClient is a "server-side client"** — it runs on a server you control, so it can
@@ -114,8 +117,8 @@ new Client
     RequirePkce = true,
     RequireConsent = false,
 
-    RedirectUris = { "http://localhost:5002/signin-oidc" },
-    PostLogoutRedirectUris = { "http://localhost:5002/signout-callback-oidc" },
+    RedirectUris = { "https://localhost:5006/signin-oidc" },
+    PostLogoutRedirectUris = { "https://localhost:5006/signout-callback-oidc" },
 
     AllowedScopes = { IdentityServerConstants.StandardScopes.OpenId, IdentityServerConstants.StandardScopes.Profile }
 }
@@ -464,7 +467,7 @@ depends on the tenant**, built on top of Phase 3's `TenantContext` rather than i
 isolation.
 
 ```
-Browser  ↔  IdentityServerHost (:5000 — mini-idg)  ↔ (Acme only) ↔  ExternalIdp (:5010 — a separate org)
+Browser  ↔  IdentityServerHost (:5001 — mini-idg)  ↔ (Acme only) ↔  ExternalIdp (:5011 — a separate org)
 ```
 
 [`../ExternalIdp`](../ExternalIdp) knows nothing about tenants — it's a plain, second,
@@ -643,17 +646,105 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
   [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md) for where that
   complexity actually shows up once you point this at a real Microsoft tenant instead
   of the toy `ExternalIdp`.
-- **`ExternalUserStore` is a `ConcurrentDictionary` that resets on every restart.**
-  Phase 5 is exactly this problem, generalized to every store in the app.
+- ~~**`ExternalUserStore` is a `ConcurrentDictionary` that resets on every restart.**~~
+  Resolved in Phase 5, below — `ExternalUserStore` is SQL-backed now.
+
+## Phase 5 — persistence
+
+Every store so far has been in-memory: `Config.cs`'s Clients/Resources via
+`.AddInMemory*()`, and `ExternalUserStore`'s `ConcurrentDictionary`. Both reset on every
+restart — a real IdG has been running continuously in production for years without
+losing a single registered client. Phase 5 replaces both with SQL Server (LocalDB
+locally), the same shape the real IdG actually uses.
+
+### Duende's own stock EF stores — no custom `IClientStore`/`IResourceStore`
+
+```csharp
+var migrationsAssembly = typeof(Program).Assembly.GetName().Name;
+var connectionString = builder.Configuration.GetConnectionString("IdentityServer");
+
+.AddConfigurationStore(options =>
+    options.ConfigureDbContext = b => b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly)))
+.AddOperationalStore(options =>
+    options.ConfigureDbContext = b => b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly)))
+```
+
+This replaces `.AddInMemoryIdentityResources/ApiScopes/ApiResources/Clients` outright —
+`Config.cs`'s lists are seed data now (see below), not the store itself.
+`AddConfigurationStore` persists Clients/Resources/Scopes; `AddOperationalStore` persists
+grants (refresh tokens, authorization codes, device codes, consent) that previously
+vanished on restart along with everything else.
+
+**Where this matches the real IdG exactly:** it has no custom `IClientStore` or
+`IResourceStore` either — both use Duende's stock EF-backed stores as-is. The real
+system's `CustomConfigurationDbContext`/`CustomPersistedGrantDbContext` subclasses exist
+only to support a legacy DACPAC-migration-assembly quirk from an old IdentityServer v3
+database — not something this sample needed to reproduce.
+
+### `Data/SeedData.cs` — standing in for the real, deleted ingestion tool
+
+The real IdG's Clients/Resources were never seeded in code at all — an external **Data
+Ingestion Tool** wrote them directly into the same standard Duende tables this sample now
+uses, and that tool has since been deleted from that codebase (the concept lives on as
+this course's own Phase 6). `SeedData.EnsureSeedData`, called once before `app.Run()`, is
+this sample's stand-in: it migrates all three `DbContext`s, then inserts `Config.cs`'s
+lists into `ConfigurationDbContext` only if it's currently empty — idempotent, safe on
+every restart, and simpler than the real system's `ApplyMigrations`-flag +
+`DatabaseMigrationStartupTask` gate (fine for a single local database; that flag exists
+in the real system to control *when* a shared, multi-instance production database gets
+migrated, a problem this sample doesn't have).
+
+### `Data/UserDbContext.cs` — the real system's other DbContext
+
+The real IdG's persistence isn't *only* Duende's stores — it also has its own,
+completely separate `UserDbContext`/`UserStore` for local user records, independent of
+Duende entirely. `ExternalUserStore`'s new backing store mirrors that split:
+`UserDbContext` owns an `ExternalUser`/`ExternalUserClaim` table pair, and
+`ExternalUserStore` itself kept the exact same public shape it always had
+(`ProvisionAsync`/`FindAsync`, both `async`) — `ExternalController` and
+`SampleProfileService` didn't change at all. The one real change: `ExternalUserStore`
+moved from `AddSingleton<>()` to the default scoped lifetime, because the reason it
+needed to outlive a single request (provisioning has to survive past the request that
+did it, for the token-issuance request that follows) is exactly what the database now
+does instead.
+
+### Verification
+
+`pwsh ./test-phase5.ps1` re-runs the Phase 2–4 HTTP flows against the DB-backed server
+(nothing regressed), then queries LocalDB directly via `sqlcmd` to prove the seed and
+Carol's federated-login provisioning are real rows, not memory. The one thing a script
+can't prove — that state survives an actual process restart, the whole point of this
+phase — needs a manual stop/start of `IdentityServerHost`; see the script's own output
+for the exact steps.
+
+### What's deliberately still missing
+
+- **No custom `IdentityProviderStore`.** `ExternalProviders` is still
+  `appsettings.json`-only — the real IdG persists this in SQL too. Planned for a future
+  phase (see the roadmap).
+- **`AddDeveloperSigningCredential()` is still a throwaway key on disk.** The real IdG
+  loads a real certificate from Azure Key Vault. Also planned for a future phase.
+- **Migrations run automatically on every startup**, no gate. Fine for one local
+  database; the real system's `ApplyMigrations` flag exists for a reason this sample
+  doesn't have yet (a shared, multi-instance production database).
 
 ## Running it
 
-1. **Five terminals**
+0. **Prerequisite (Phase 5+): SQL Server LocalDB.** `IdentityServerHost` now needs a
+   `(localdb)\mssqllocaldb` instance reachable at startup — it ships with Visual Studio,
+   or install it standalone via the SQL Server Express LocalDB installer. No manual setup
+   beyond that: `dotnet run` creates the `MiniIdG` database, applies migrations, and
+   seeds it on first startup.
+
+1. **Five terminals** — every project's `launchSettings.json` already pins its own port
+   (`https://localhost:5001` for IdentityServerHost, `5011` ExternalIdp, `5006`
+   MvcClient, `5007` SampleApi, `5173` ReactSpa), so a plain `dotnet run` in each is
+   enough:
 
    ```bash
    # terminal 1
    cd src/ExternalIdp
-   dotnet run --urls http://localhost:5010
+   dotnet run
 
    # terminal 2
    cd src/IdentityServerHost
@@ -661,11 +752,11 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
 
    # terminal 3
    cd src/MvcClient
-   dotnet run --urls http://localhost:5002
+   dotnet run
 
    # terminal 4
    cd src/SampleApi
-   dotnet run --urls http://localhost:5003
+   dotnet run
 
    # terminal 5
    cd src/ReactSpa
@@ -673,7 +764,7 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
    npm run dev
    ```
 
-2. **MVC flow** — browse to `http://localhost:5002`, click *Go to the secure page*, and
+2. **MVC flow** — browse to `https://localhost:5006`, click *Go to the secure page*, and
    sign in as `alice` / `alice` (or `bob` / `bob`). You'll land back on the secure page
    with a table of every claim in your identity — `sub`, `name`, `idp`, and the token
    timestamps. Notably *not* `email`, even though `alice`'s `TestUser` has one and
@@ -696,7 +787,7 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
    the browser's own `fetch()` calls SampleApi directly across origins (`:5173` →
    `:5003`), which is why SampleApi now has a CORS policy (see its README).
 
-5. **Tenant resolution, in a browser** — from `http://localhost:5002`, click *Log in as
+5. **Tenant resolution, in a browser** — from `https://localhost:5006`, click *Log in as
    Acme Corp* or *Log in as Globex Corporation* (see MvcClient's README for how these
    set `acr_values` before redirecting). Try `alice`/`alice` on Acme (succeeds,
    `tenant_id: acme` on the claims table) and on Globex (rejected — right password,
@@ -710,7 +801,7 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
 6. **External IdP federation** — from the same *Log in as Acme Corp* link, click
    **Sign in with ExternalIdp** instead of using the local form, and sign in as
    `carol`/`carol` (a user that only exists on the separate ExternalIdp server on port
-   5010) — you'll land back on MvcClient's secure page with `name: Carol Chen` and
+   5011) — you'll land back on MvcClient's secure page with `name: Carol Chen` and
    `tenant_id: acme`, even though ExternalIdp itself never heard the word "acme."
    Globex's login page has no such button at all — try *Log in as Globex Corporation*
    to confirm. [`test-phase4.ps1`](../../test-phase4.ps1) drives the same round trip
@@ -726,8 +817,10 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
    its *Call the API* button (the `api1` scope, and SampleApi's own CORS policy);
    [`test-phase3.ps1`](../../test-phase3.ps1) is the tenant-resolution scenarios from
    step 5; [`test-phase4.ps1`](../../test-phase4.ps1) is the federated-login scenario
-   from step 6. None of the six drive real browser JavaScript, so steps 2–4 above still
-   need a manual pass at least once (see `ReactSpa`'s README for why):
+   from step 6; [`test-phase5.ps1`](../../test-phase5.ps1) re-runs phases 2–4 against the
+   now DB-backed server and queries LocalDB directly to confirm the seed/provisioning
+   landed in SQL Server. None of the seven drive real browser JavaScript, so steps 2–4
+   above still need a manual pass at least once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
@@ -736,6 +829,7 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
    pwsh ./test-spa-api.ps1
    pwsh ./test-phase3.ps1
    pwsh ./test-phase4.ps1
+   pwsh ./test-phase5.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -755,10 +849,11 @@ forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
   missing `ClaimAction` silently dropping `tenant_id` from the merged claims). Wiring the
   same into ReactSpa (`oidc-client-ts`'s `signinRedirect({ acr_values: ... })`) is still
   open — see its README's "try it yourself" section.
-- **Persistence.** Everything still resets to empty on every restart except
-  `tempkey.jwk` (the signing key) — clients, resources, tenants, test users, *and now
-  provisioned external identities* (`ExternalUserStore`) are all in-memory. Phase 5,
-  next, replaces every one of these with a real database.
+- ~~**Persistence.**~~ Resolved in Phase 5 — clients, resources, grants, and provisioned
+  external identities are all SQL Server-backed now. `Tenants.cs` and `TestUsers.cs`
+  (test-user credentials) are still hard-coded in-memory on purpose — the real IdG has no
+  local password login at all, and `Tenants.cs` is deliberately unported until Phase 7
+  (see the roadmap).
 - **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
   configurable external-id claim name, no duplicate-claim handling — Carol's `name`
   claim just works because ExternalIdp only ever sends one of it.

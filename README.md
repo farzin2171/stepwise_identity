@@ -11,8 +11,11 @@ A mini Identity Gateway, built from scratch in phases that mirror
 2. Clients ✓ (MVC + React)
 3. Multi-tenancy ✓
 4. External identity providers ✓
-5. Persistence (SQL Server instead of in-memory) ← next
-6. Data ingestion / config tooling
+5. Persistence (SQL Server instead of in-memory) ✓
+6. Data ingestion / config tooling ← next
+7. DIT external-service calls (TenantClient, UserClient)
+8. Signing-key management (Key Vault instead of a developer credential)
+9. IdentityProviderStore (DB-persisted external-provider config)
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its

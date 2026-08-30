@@ -46,7 +46,7 @@ function TryLogin($username, $password, $tenantHint) {
 
     $pkce = NewPkcePair
     $scope = if ($tenantHint) { "openid profile tenant" } else { "openid profile" }
-    $authorizeUrl = "http://localhost:5000/connect/authorize?client_id=reactspa&redirect_uri=" + `
+    $authorizeUrl = "https://localhost:5001/connect/authorize?client_id=reactspa&redirect_uri=" + `
         [uri]::EscapeDataString("http://localhost:5173/callback") + `
         "&response_type=code&response_mode=query&scope=" + [uri]::EscapeDataString($scope) + `
         "&code_challenge=$($pkce.Challenge)&code_challenge_method=S256&state=teststate123"
@@ -58,7 +58,7 @@ function TryLogin($username, $password, $tenantHint) {
     $returnUrl = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, 'name="ReturnUrl" value="([^"]*)"').Groups[1].Value)
     $verToken  = [regex]::Match($resp.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]*)"').Groups[1].Value
     $body = @{ Username = $username; Password = $password; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken }
-    $resp = Follow $client "http://localhost:5000/Account/Login" "POST" $body "localhost:5173"
+    $resp = Follow $client "https://localhost:5001/Account/Login" "POST" $body "localhost:5173"
 
     if ($resp.Uri -notmatch "code=") {
         # Rejected - the ModelState error is rendered back into the same login page.
@@ -71,14 +71,14 @@ function TryLogin($username, $password, $tenantHint) {
         grant_type = "authorization_code"; code = $code
         redirect_uri = "http://localhost:5173/callback"; client_id = "reactspa"; code_verifier = $pkce.Verifier
     }
-    $resp = Follow $client "http://localhost:5000/connect/token" "POST" $tokenBody
+    $resp = Follow $client "https://localhost:5001/connect/token" "POST" $tokenBody
     if ($resp.StatusCode -ne 200) { throw "Token endpoint failed unexpectedly: $($resp.Content)" }
 
     # Same fact as the MVC lesson: the code flow's ID token carries only sub by default. oidc-client-ts
     # (what the real React app uses) defaults loadUserInfo=true and calls this endpoint automatically -
     # this script does the same by hand to see the same claims a real browser session would end up with.
     $accessToken = ($resp.Content | ConvertFrom-Json).access_token
-    $userinfoRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5000/connect/userinfo")
+    $userinfoRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "https://localhost:5001/connect/userinfo")
     $userinfoRequest.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $accessToken)
     $userinfoResp = $client.SendAsync($userinfoRequest).GetAwaiter().GetResult()
     $claims = ($userinfoResp.Content.ReadAsStringAsync().GetAwaiter().GetResult()) | ConvertFrom-Json

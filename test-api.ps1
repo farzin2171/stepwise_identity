@@ -32,11 +32,11 @@ function Follow($uri, $method = "GET", $formFields = $null) {
 }
 
 Write-Host "1. Log in as alice (same flow as test-phase2.ps1)..."
-$resp = Follow "http://localhost:5002/Home/Secure"
+$resp = Follow "https://localhost:5006/Home/Secure"
 $returnUrl = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, 'name="ReturnUrl" value="([^"]*)"').Groups[1].Value)
 $verToken  = [regex]::Match($resp.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]*)"').Groups[1].Value
 if (-not $returnUrl -or -not $verToken) { throw "Could not parse ReturnUrl or antiforgery token from login page" }
-$resp = Follow "http://localhost:5000/Account/Login" "POST" @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken }
+$resp = Follow "https://localhost:5001/Account/Login" "POST" @{ Username = "alice"; Password = "alice"; ReturnUrl = $returnUrl; __RequestVerificationToken = $verToken }
 $formAction = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, "action=['""]([^'""]*)['""]").Groups[1].Value)
 if (-not $formAction) { throw "Expected an auto-post form (response_mode=form_post) from the authorize callback" }
 $hiddenFields = @{}
@@ -46,7 +46,7 @@ if ($resp.Content -notmatch "You're signed in") { throw "Login did not complete:
 Write-Host "   Logged in." -ForegroundColor Green
 
 Write-Host "2. Click 'Call the API' (GET /Home/CallApi)..."
-$resp = Follow "http://localhost:5002/Home/CallApi"
+$resp = Follow "https://localhost:5006/Home/CallApi"
 if ($resp.Content -notmatch "HTTP 200") { throw "Expected the API call to succeed with HTTP 200: $($resp.Content.Substring(0, [Math]::Min(300, $resp.Content.Length)))" }
 Write-Host "   SampleApi answered with HTTP 200." -ForegroundColor Green
 
