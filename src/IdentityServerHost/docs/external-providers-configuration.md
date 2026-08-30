@@ -26,7 +26,7 @@ Lives in `appsettings.Development.json` (dev-only — see "Where secrets go," be
       "Name": "external-idp",
       "DisplayName": "ExternalIdp (partner SSO)",
       "EcosystemTenant": "acme",
-      "Authority": "http://localhost:5010",
+      "Authority": "https://localhost:5011",
       "ClientId": "mini-idg-host",
       "ClientSecret": "external-secret",
       "CallbackPath": "/signin-external-idp"
@@ -45,7 +45,7 @@ config — nothing about the login page or `ExternalController` changed to make 
 | `Name` | yes | The authentication scheme name — what `Challenge(props, scheme)` and `/External/Challenge?scheme=...` pass around. Must be unique across every provider you configure. |
 | `DisplayName` | yes | What the login page's button says: "Sign in with `{DisplayName}`". |
 | `EcosystemTenant` | yes | Which tenant (`Tenants.DisplayNames` key — `acme`, `globex`) this provider belongs to. This is what `AuthenticationHelper.GetAllAvailableIdentityProviders(tenantKey)` filters on — see "How tenant gating works now," below. |
-| `Authority` | yes | The OIDC issuer to trust. For `ExternalIdp` this is `http://localhost:5010`; for a real Entra ID tenant it looks like `https://login.microsoftonline.com/{tenantId}/v2.0` — see [`azure-entra-b2c-setup.md`](azure-entra-b2c-setup.md). |
+| `Authority` | yes | The OIDC issuer to trust. For `ExternalIdp` this is `https://localhost:5011`; for a real Entra ID tenant it looks like `https://login.microsoftonline.com/{tenantId}/v2.0` — see [`azure-entra-b2c-setup.md`](azure-entra-b2c-setup.md). |
 | `ClientId` | yes | The client ID this app registered as, on the provider's side. |
 | `ClientSecret` | yes (for a confidential client) | See "Where secrets go," below — never commit a real one. |
 | `CallbackPath` | yes | Must exactly match a redirect URI registered with the provider — see the callout below. |

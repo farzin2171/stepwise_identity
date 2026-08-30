@@ -12,8 +12,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 3. Multi-tenancy ✓
 4. External identity providers ✓
 5. Persistence (SQL Server instead of in-memory) ✓
-6. Data ingestion / config tooling ← next
-7. DIT external-service calls (TenantClient, UserClient)
+6. Data ingestion / config tooling ✓
+7. DIT external-service calls (TenantClient, UserClient) ← next
 8. Signing-key management (Key Vault instead of a developer credential)
 9. IdentityProviderStore (DB-persisted external-provider config)
 ```
@@ -31,6 +31,10 @@ A mini Identity Gateway, built from scratch in phases that mirror
 - [src/ExternalIdp](src/ExternalIdp) — a second, independent Duende IdentityServer that
   IdentityServerHost federates to (Acme's users only) as of Phase 4. See its
   [README](src/ExternalIdp/README.md).
+- [src/Tools/ConfigIngestionTool](src/Tools/ConfigIngestionTool) — Phase 6's data-ingestion
+  tool: reads `IdentityServerHost/Configurations/IdentityServerConfig.json` and writes it
+  into the same SQL Server database IdentityServerHost reads from. See its
+  [README](src/Tools/ConfigIngestionTool/README.md).
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -85,10 +89,18 @@ Verification scripts (repo root):
   `client_id` suffix instead), and that `ServiceAccountOnlyFilter` on
   `DELETE /api/v1/admin/cache/{tenantKey}` really does discriminate by identity type
   (401 with no token, 403 for a real user, 200 for a service account).
+- [`test-phase5.ps1`](test-phase5.ps1) — proves Clients/Resources/grants and
+  federated-login provisioning are SQL Server-backed now, by querying LocalDB directly.
+- [`test-phase6.ps1`](test-phase6.ps1) — proves `Configurations/IdentityServerConfig.json`
+  is authoritative: corrupts a client directly in the database, re-runs
+  `ConfigIngestionTool`, and confirms both the row and a real login are restored.
 
-None of the eight drive real browser JavaScript — see
+None of the ten drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 
 All relevant apps for a given script must already be running (`dotnet run` /
-`npm run dev`, per project README) before you run it.
+`npm run dev`, per project README) before you run it. As of Phase 6, IdentityServerHost's
+database also needs `src/Tools/ConfigIngestionTool` run at least once first — see its
+README — since IdentityServerHost itself no longer seeds any Clients/Resources on
+startup.

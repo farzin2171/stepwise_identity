@@ -9,7 +9,7 @@ just another OIDC relying party, registered as an ordinary client — the same w
 other web app would be.
 
 ```
-IdentityServerHost (:5000)  —Authorization Code + PKCE→  ExternalIdp (:5010)
+IdentityServerHost (:5001)  —Authorization Code + PKCE→  ExternalIdp (:5011)
         (as a CLIENT of this server, using ClientId "mini-idg-host")
 ```
 
@@ -38,14 +38,15 @@ new Client
     RequirePkce = true,
     RequireConsent = false,
 
-    RedirectUris = { "http://localhost:5000/signin-external-idp" },
+    RedirectUris = { "https://localhost:5001/signin-external-idp" },
 
     AllowedScopes = { IdentityServerConstants.StandardScopes.OpenId, IdentityServerConstants.StandardScopes.Profile }
 }
 ```
 
-This is `mvcclient` and `reactspa`'s registration in `IdentityServerHost/Config.cs`,
-mirrored — except here, **IdentityServerHost is the client being registered.** Same
+Same shape as `mvcclient` and `reactspa`'s registrations in
+`IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6) — except here,
+**IdentityServerHost is the client being registered.** Same
 grant type, same PKCE requirement, same shape. The only test user is Carol
 (`carol`/`carol`), who exists *only here* — the entire point of federation is that the
 relying party (IdentityServerHost) doesn't maintain its own password for her.
@@ -69,13 +70,13 @@ full multi-terminal setup.
 
 ```bash
 cd src/ExternalIdp
-dotnet run --urls http://localhost:5010
+dotnet run --urls https://localhost:5011
 ```
 
 Confirm it's alive on its own:
 
 ```bash
-curl http://localhost:5010/.well-known/openid-configuration
+curl https://localhost:5011/.well-known/openid-configuration
 ```
 
 ## What's deliberately missing (and why)

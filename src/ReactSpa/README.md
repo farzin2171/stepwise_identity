@@ -64,7 +64,7 @@ failing to reach the IdG.
 
 ```tsx
 const oidcConfig = {
-  authority: 'http://localhost:5000',
+  authority: 'https://localhost:5001',
   client_id: 'reactspa',
   redirect_uri: 'http://localhost:5173/callback',
   response_type: 'code',
@@ -115,7 +115,7 @@ work MvcClient's `HomeController.CallApi()` does.
 
 ```tsx
 async function callApi() {
-  const response = await fetch('http://localhost:5003/api/v1/identity', {
+  const response = await fetch('https://localhost:5007/api/v1/identity', {
     headers: { Authorization: `Bearer ${auth.user?.access_token}` },
   })
   const body = await response.json()
@@ -139,7 +139,7 @@ Three things make this work, each with a direct counterpart in either `main.tsx`
 3. **A CORS policy on SampleApi itself.** This is the one piece MvcClient's version of
    this feature never needed. MvcClient calls SampleApi server-to-server — no browser
    involved, so no CORS. This app calls it with the browser's own `fetch()`, from a
-   *different origin* (`:5173` calling `:5003`), which makes it subject to the same-origin
+   *different origin* (`:5173` calling `:5007`), which makes it subject to the same-origin
    policy every browser enforces. `SampleApi/Program.cs` now has:
 
    ```csharp
@@ -172,7 +172,7 @@ Three things make this work, each with a direct counterpart in either `main.tsx`
 
    # terminal 2
    cd src/SampleApi
-   dotnet run --urls http://localhost:5003
+   dotnet run --urls https://localhost:5007
 
    # terminal 3
    cd src/ReactSpa
@@ -183,14 +183,14 @@ Three things make this work, each with a direct counterpart in either `main.tsx`
 2. **Browse to `http://localhost:5173`**, click **Log in**, sign in as `alice` /
    `alice`. You'll land back on the SPA, still on `localhost:5173`, with a claims table
    rendered from a token that never touched a server — IdentityServer's response went
-   straight from `:5000` to this tab.
+   straight from `:5001` to this tab.
 
 3. **Click *Call the API***. The response — including `aud: api1` and `scope: api1` —
-   renders right below the button, fetched directly from `:5003` by this page's own
+   renders right below the button, fetched directly from `:5007` by this page's own
    JavaScript.
 
 4. **Open dev tools → Application → Session Storage** and find the
-   `oidc.user:http://localhost:5000:reactspa` key. That's the entire session: ID token,
+   `oidc.user:https://localhost:5001:reactspa` key. That's the entire session: ID token,
    access token, and expiry, sitting in plaintext, readable by any script on the page —
    including the `fetch()` call above. Compare this to MvcClient's cookie, which you
    can't read from JavaScript at all (`HttpOnly`); this is the concrete version of the
@@ -242,8 +242,10 @@ working end to end.
 
 ## Try it yourself before moving on
 
-Change `RequireClientSecret` back to its default (`true`) on `reactspa` in
-`IdentityServerHost/Config.cs`, restart IdentityServerHost, and re-run
+Change `requireClientSecret` back to its default (`true`, i.e. remove the line) on
+`reactspa` in
+[`IdentityServerHost/Configurations/IdentityServerConfig.json`](../IdentityServerHost/Configurations/IdentityServerConfig.json)
+(Phase 6 — this is no longer `Config.cs`), re-run `ConfigIngestionTool`, and re-run
 `test-phase2-spa.ps1` — read the error the token endpoint gives you.
 
 Separately: comment out `app.UseCors("ReactSpa")` in `SampleApi/Program.cs`, restart

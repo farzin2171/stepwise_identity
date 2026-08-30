@@ -53,9 +53,14 @@ loosely.
 - Check `CONTEXT.md` for whether this phase introduces or overloads any existing term;
   update it inline the moment a term resolves (see the `domain-modeling` skill).
 
-## Known pre-existing gotcha
+## Known pre-existing gotcha (fixed in Phase 5, worth knowing about)
 
-Phase 08 migrated every project from `http://` to `https://` launch URLs but did not
-update `test-phase3.ps1`/`test-phase4.ps1` (still hardcode the old `http://localhost:5000`
-/`5010`). If a verification script fails with a connection or discovery-document error,
-check this mismatch before assuming a regression.
+Phase 08 migrated every project from `http://` to `https://` launch URLs but didn't
+update every `.ps1` script or doc reference to match — Phase 5 fixed the ones that broke
+verification at the time (all `test-phase*.ps1` scripts), but if a *doc* still shows a
+`http://localhost:50XX` URL, it's leftover drift from that same migration, not a new bug.
+Fix it the same way: match whatever `launchSettings.json` actually pins for that project
+(`5001` IdentityServerHost, `5011` ExternalIdp, `5006` MvcClient, `5007` SampleApi, `5173`
+ReactSpa, all HTTPS except ReactSpa) — except inside a section that's explicitly
+*narrating what a past phase looked like at the time* (e.g. a "here's what broke and
+why" retrospective), where the old value is the point and shouldn't be changed.

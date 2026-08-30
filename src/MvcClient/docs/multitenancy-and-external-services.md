@@ -313,12 +313,12 @@ Verbatim port of `Equisoft.Apply.Domain/Configuration/{ServiceDefinition,Externa
 "ExternalServicesApi": {
   "BaseUri": "",
   "ServiceAccount": {
-    "TokenEndpoint": "http://localhost:5000/connect/token",
+    "TokenEndpoint": "https://localhost:5001/connect/token",
     "ClientId": "mvcclient-svc",
     "TenantSecrets": { "acme": "acme-svc-secret", "globex": "globex-svc-secret" }
   },
   "ServiceDefinitions": {
-    "SampleApi": { "BaseUri": "http://localhost:5003", "Path": "", "HealthPath": "" }
+    "SampleApi": { "BaseUri": "https://localhost:5007", "Path": "", "HealthPath": "" }
   }
 }
 ```
@@ -371,7 +371,7 @@ different, not just a different label on the same result.
 Same four terminals as every phase since 4 (`ExternalIdp`, `IdentityServerHost`,
 `MvcClient`, `SampleApi` — see `IdentityServerHost/README.md#running-it`). Then:
 
-1. Browse to `http://localhost:5002`, click **Log in as Acme Corp**, sign in as
+1. Browse to `https://localhost:5006`, click **Log in as Acme Corp**, sign in as
    `alice`/`alice`.
 2. The secure page now shows **Tenant (from `ITenantContext`): Acme Corp (acme)** above
    the claims table — proof the middleware resolved it from the `tenant_id` claim, not
@@ -422,9 +422,12 @@ independently exercises `mvcclient-svc.globex` with its own secret.
    *Log in as Globex Corporation* still works normally. This is the exact mechanism a
    real per-tenant IdentityServer deployment would use.
 2. **Break a tenant's service-account access without touching the other tenant's.**
-   Change `mvcclient-svc.acme`'s secret in `IdentityServerHost/Config.cs` without
-   updating `ExternalServicesApi:ServiceAccount:TenantSecrets:acme` to match — Acme's
-   *Call the API (as the service account)* now fails; Globex's keeps working.
+   Change `mvcclient-svc.acme`'s `clientSecret` in
+   `IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6 — this is no
+   longer `Config.cs`) without updating
+   `ExternalServicesApi:ServiceAccount:TenantSecrets:acme` to match, then re-run
+   `ConfigIngestionTool` — Acme's *Call the API (as the service account)* now fails;
+   Globex's keeps working.
 3. **Add real hostname-based resolution**, the way Apply actually does it: this would
    mean adding a second resolution path to `TenantResolutionMiddleware` that runs
    *before* authentication (so it can influence which tenant the OIDC challenge targets,

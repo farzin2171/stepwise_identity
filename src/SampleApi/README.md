@@ -16,8 +16,8 @@ versioning, `ProblemDetails`, and a service-account-only endpoint filter, each s
 compared against the real code it was ported from.
 
 ```
-Browser  ↔  MvcClient (:5002)  —Bearer token (server-to-server)→  SampleApi (:5003)
-Browser  ↔  ReactSpa (:5173)   —Bearer token (browser fetch())──→  SampleApi (:5003)
+Browser  ↔  MvcClient (:5006)  —Bearer token (server-to-server)→  SampleApi (:5007)
+Browser  ↔  ReactSpa (:5173)   —Bearer token (browser fetch())──→  SampleApi (:5007)
                   ↑                                    ↑
              logs the user in                  never talks to IdentityServerHost
              against IdentityServerHost        directly — only downloads its public
@@ -33,7 +33,7 @@ that difference is why this project needs a CORS policy at all (see below).
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
        .AddJwtBearer(options =>
        {
-           options.Authority = "http://localhost:5000";
+           options.Authority = "https://localhost:5001";
            options.TokenValidationParameters.ValidAudience = "api1";
        });
 
@@ -44,13 +44,14 @@ builder.Services.AddAuthorization(options =>
 ```
 
 - **`Authority`** — on the *first* request that needs to validate a token, the JWT
-  Bearer middleware fetches `http://localhost:5000/.well-known/openid-configuration`,
+  Bearer middleware fetches `https://localhost:5001/.well-known/openid-configuration`,
   reads `jwks_uri` from it, and downloads IdentityServerHost's public signing key. It
   caches all of this. Every request after that validates the token's signature
   **entirely locally** — no network round trip back to IdentityServerHost per request.
   This is why JWT Bearer scales to many API replicas with no shared session store.
-- **`ValidAudience = "api1"`** — must match the `ApiResource` name configured in
-  `IdentityServerHost/Config.cs`. Duende stamps that name into every access token's
+- **`ValidAudience = "api1"`** — must match the `apiResources` entry's `name` configured
+  in `IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6). Duende
+  stamps that name into every access token's
   `aud` claim. A token minted for some *other* audience — even a perfectly valid,
   unexpired one — is rejected here before any of this API's own code runs.
 
@@ -115,9 +116,10 @@ By default, an **access token** carries only protocol claims — `sub`, `scope`,
 `client_id`, `aud`, and so on — *not* the identity claims (`name`, `email`) that ended
 up in the **ID token** via the `profile` scope. An access token and an ID token don't
 automatically share claims; each side has to ask for what it needs. That's what
-`UserClaims = { "name", "email" }` on the `ApiResource` in
-`IdentityServerHost/Config.cs` does — it tells Duende "when a token is issued for
-`api1`, also copy these claims onto it, if the user granted the scopes that carry them."
+`"userClaims": [ "name", "email" ]` on the `api1` entry in
+`IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6) does — it tells
+Duende "when a token is issued for `api1`, also copy these claims onto it, if the user
+granted the scopes that carry them."
 
 ## CORS — needed for ReactSpa, not for MvcClient
 
@@ -137,7 +139,7 @@ MvcClient calls this API from server-side C# code — an `HttpClient` running in
 ASP.NET Core process, not inside a browser. The browser's same-origin policy (and CORS,
 which relaxes it) is a browser-enforced rule; server-to-server calls were never subject
 to it. ReactSpa calls this API with the browser's own `fetch()`, from a *different
-origin* (`localhost:5173` calling `localhost:5003`), which makes every request subject
+origin* (`localhost:5173` calling `localhost:5007`), which makes every request subject
 to CORS. Without this policy, the browser sends a preflight `OPTIONS` request before the
 real `GET`, gets no `Access-Control-Allow-Origin` header back, and refuses to send the
 real request at all — this API's `[Authorize]`/scope checks never even get a chance to
@@ -159,10 +161,10 @@ can confirm it refuses anonymous traffic:
 
 ```bash
 cd src/SampleApi
-dotnet run --urls http://localhost:5003
+dotnet run --urls https://localhost:5007
 
 # in another terminal
-curl -i http://localhost:5003/api/v1/identity
+curl -i https://localhost:5007/api/v1/identity
 # HTTP/1.1 401 Unauthorized
 ```
 

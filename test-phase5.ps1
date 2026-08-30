@@ -25,7 +25,7 @@ Write-Host "2. Querying SQL Server (LocalDB) directly to confirm the seed/provis
 
 $clientCount = (sqlcmd -S "(localdb)\mssqllocaldb" -d MiniIdG -h -1 -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM Clients" -C).Trim()
 if ([int]$clientCount -lt 4) { throw "Expected at least 4 seeded clients in ConfigurationDbContext, found $clientCount" }
-Write-Host "   PASS - $clientCount clients found in the Clients table (seeded from Config.cs, not in-memory)" -ForegroundColor Green
+Write-Host "   PASS - $clientCount clients found in the Clients table (SQL Server-backed, not in-memory)" -ForegroundColor Green
 
 $carolCount = (sqlcmd -S "(localdb)\mssqllocaldb" -d MiniIdG -h -1 -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM Users WHERE SubjectId = 'external:external-idp:ext-1'" -C).Trim()
 if ([int]$carolCount -ne 1) { throw "Expected Carol's provisioned row in Users, found $carolCount" }

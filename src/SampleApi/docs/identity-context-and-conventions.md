@@ -80,21 +80,22 @@ The real service picks between two claim types depending on caller kind — `ten
 a user, `service_tenant` for a service account
 (`IdentityPrincipalClaimDefaults.UserTenantClaimType` /
 `ServiceTenantClaimType`). This sample's mini IdG only ever stamps one tenant claim
-(`tenant_id`, on a user token — see `IdentityServerHost/Config.cs`'s `tenant`
-`IdentityResource`) and stamps **nothing** onto a client-credentials token. Instead,
-tenant is baked into the client_id's own suffix by convention —
-`mvcclient-svc.acme`, `mvcclient-svc.globex` — a pattern this repo already established
-in `IdentityServerHost/Config.cs` for MvcClient's service-account clients (see the
-other doc above). `IdentityContext` for a service caller just parses that suffix
-instead of reading a claim that doesn't exist here. Same intent (know which tenant a
-service account acts for), different mechanism.
+(`tenant_id`, on a user token — see the `tenant` `IdentityResource` in
+`IdentityServerHost/Configurations/IdentityServerConfig.json`, Phase 6) and stamps
+**nothing** onto a client-credentials token. Instead, tenant is baked into the
+client_id's own suffix by convention — `mvcclient-svc.acme`, `mvcclient-svc.globex` — a
+pattern this repo already established in that same file's `clients` list for
+MvcClient's service-account clients (see the other doc above). `IdentityContext` for a
+service caller just parses that suffix instead of reading a claim that doesn't exist
+here. Same intent (know which tenant a service account acts for), different mechanism.
 
 **A necessary prerequisite change, not just SampleApi's:** `tenant_id` previously
 never reached SampleApi's access token at all — it only reached MvcClient's own ID
 token (which MvcClient's `TenantResolutionMiddleware` reads directly off the
-signed-in user's cookie, a completely separate claims set). `IdentityServerHost/Config.cs`'s
-`ApiResource("api1")` now lists `"tenant_id"` alongside `"name"`/`"email"` in
-`UserClaims`, for the same reason those two are there: an *access token*'s claims come
+signed-in user's cookie, a completely separate claims set).
+`IdentityServerConfig.json`'s `api1` `apiResources` entry now lists `"tenant_id"`
+alongside `"name"`/`"email"` in `userClaims`, for the same reason those two are there:
+an *access token*'s claims come
 from the `ApiResource`/`ApiScope` configuration, independent of which `IdentityResource`
 scopes were also requested for the ID token.
 
@@ -251,7 +252,7 @@ comes back with an **empty body**, `Content-Length: 0`, despite `AddProblemDetai
 being registered:
 
 ```
-$ curl -i http://localhost:5003/api/v1/identity
+$ curl -i https://localhost:5007/api/v1/identity
 HTTP/1.1 401 Unauthorized
 Content-Length: 0
 WWW-Authenticate: Bearer
@@ -268,7 +269,7 @@ every unauthenticated/forbidden response gets a body. `ServiceAccountOnlyFilter`
 problem+json:
 
 ```
-$ curl -i -X DELETE http://localhost:5003/api/v1/admin/cache/acme
+$ curl -i -X DELETE https://localhost:5007/api/v1/admin/cache/acme
 HTTP/1.1 401 Unauthorized
 Content-Type: application/problem+json
 
@@ -345,11 +346,12 @@ click-through). Then, without a browser at all:
    be. Put it back afterward.
 2. **Add a third identity type.** IdentityServerHost has no concept of a "guest" or
    "on-behalf-of" caller today, but you can simulate one: add a claim like
-   `"acting_for": "acme"` to a service-account client in
-   `IdentityServerHost/Config.cs`'s `Clients`, extend `IdentityType` with a value for
-   it, and update `IdentityContext.Populate` to check for that claim before falling
-   back to the `client_id`-suffix parse. This is the shape (if not the exact mechanism)
-   of what the real `OnBehalfOf` identity type does.
+   `"acting_for": "acme"` to a service-account client's entry in
+   `IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6 — no longer
+   `Config.cs`), re-run `ConfigIngestionTool`, extend `IdentityType` with a value for it,
+   and update `IdentityContext.Populate` to check for that claim before falling back to
+   the `client_id`-suffix parse. This is the shape (if not the exact mechanism) of what
+   the real `OnBehalfOf` identity type does.
 3. **Feel the versioning boundary.** Try calling `GET /api/v2/identity` (a version this
    sample never registers) — a plain `404`, since `/api/v{version:apiVersion}` never
    matches a route template for a version nobody declared; the handler never runs.

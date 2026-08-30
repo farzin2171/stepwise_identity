@@ -46,9 +46,9 @@ builder.Services.AddIdentityServer(options =>
        })
        // Phase 5: Duende's own stock EF stores, SQL Server-backed — the same types the real IdG uses,
        // no custom IClientStore/IResourceStore (it doesn't have those either; only a custom
-       // IdentityProviderStore, not yet ported here). Config.cs's lists are now seed data
-       // (Data/SeedData.cs), not the store itself — Duende reads Clients/Resources from the database
-       // from here on.
+       // IdentityProviderStore, not yet ported here). Phase 6: rows come from
+       // ../../Tools/ConfigIngestionTool now, not a seed step in this app — Duende just reads whatever
+       // is in the database.
        .AddConfigurationStore(options =>
        {
            options.ConfigureDbContext = b =>
@@ -93,10 +93,10 @@ builder.Services.AddAuthentication()
 
 var app = builder.Build();
 
-// Applies pending migrations for all three DbContexts and seeds Config.cs's Clients/Resources into
-// ConfigurationDbContext if it's empty — runs on every startup, idempotent. See Data/SeedData.cs for why
-// this stands in for the real IdG's (since-deleted) data-ingestion tool.
-SeedData.EnsureSeedData(app.Services);
+// Applies pending migrations for all three DbContexts — runs on every startup, idempotent. As of
+// Phase 6, this no longer seeds any rows: run ../../Tools/ConfigIngestionTool separately to populate
+// Clients/Resources from Configurations/IdentityServerConfig.json. See Data/SeedData.cs.
+SeedData.EnsureDatabasesMigrated(app.Services);
 
 app.UseStaticFiles();
 app.UseRouting();

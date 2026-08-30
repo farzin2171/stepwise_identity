@@ -47,7 +47,7 @@ already have a B2C tenant in production).
    (single tenant) for a first pass — that's what this sample's other client
    registrations assume.
 4. **Redirect URI**: platform **Web**, value
-   `http://localhost:5000/signin-oidc-entra`. This must match the `CallbackPath` you
+   `https://localhost:5001/signin-oidc-entra`. This must match the `CallbackPath` you
    configure in step 3 below **byte for byte** — scheme, host, port, path, no trailing
    slash difference. This is the single most common way this integration fails
    (`AADSTS50011` if it doesn't match).
@@ -161,7 +161,7 @@ the org's own directory already has these people.
 ### 3. Register the application
 
 **App registrations** → **New registration**, inside the B2C tenant:
-- **Redirect URI**: Web, `http://localhost:5000/signin-oidc-b2c`.
+- **Redirect URI**: Web, `https://localhost:5001/signin-oidc-b2c`.
 - Copy **Application (client) ID**.
 - **Certificates & secrets** → new secret → copy the **Value**.
 - Note your B2C tenant's domain, e.g. `yourtenant.onmicrosoft.com`.

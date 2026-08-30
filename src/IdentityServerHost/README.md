@@ -11,8 +11,8 @@ actually is under all its production scaffolding.
 3. Multi-tenancy ✓
 4. External identity providers ✓
 5. Persistence (SQL Server instead of in-memory) ✓
-6. Data ingestion / config tooling ← next
-7. DIT external-service calls (TenantClient, UserClient)
+6. Data ingestion / config tooling ✓
+7. DIT external-service calls (TenantClient, UserClient) ← next
 8. Signing-key management (Key Vault instead of a developer credential)
 9. IdentityProviderStore (DB-persisted external-provider config)
 ```
@@ -728,13 +728,131 @@ for the exact steps.
   database; the real system's `ApplyMigrations` flag exists for a reason this sample
   doesn't have yet (a shared, multi-instance production database).
 
+## Phase 6 — data ingestion / config tooling
+
+Phase 5 made this app SQL-backed, but `Data/SeedData.cs` still seeded rows straight from
+`Config.cs` — a C# file, compiled into the app, editable only by changing code and
+redeploying. The real IdG doesn't work that way: config is data, edited and shipped
+independently of the app that reads it. Phase 6 makes that true here too.
+
+### `Configurations/IdentityServerConfig.json` — config is data now, not code
+
+`Config.cs` is gone. In its place,
+[`Configurations/IdentityServerConfig.json`](Configurations/IdentityServerConfig.json)
+holds the exact same four lists — `identityResources`, `apiScopes`, `apiResources`,
+`clients` — as plain JSON:
+
+```json
+{
+  "clients": [
+    {
+      "clientId": "mvcclient",
+      "clientSecret": "secret",
+      "allowedGrantTypes": [ "authorization_code" ],
+      "requirePkce": true,
+      "requireConsent": false,
+      "redirectUris": [ "https://localhost:5006/signin-oidc" ],
+      "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
+    }
+  ]
+}
+```
+
+Grant-type strings (`"authorization_code"`, `"client_credentials"`) are the literal
+protocol values Duende's own `GrantTypes.Code`/`GrantTypes.ClientCredentials` helpers
+produce — the JSON doesn't need its own vocabulary for this, just the wire values.
+Secrets are plaintext in the file (`"secret"`, not a hash) and get hashed at ingestion
+time, the same moment `Config.cs`'s `new Secret("secret".Sha256())` used to — a real
+deployment would pull the plaintext from a vault at that same moment, not commit it.
+
+### `../Tools/ConfigIngestionTool` — a real, standalone ingestion tool
+
+[`../Tools/ConfigIngestionTool`](../Tools/ConfigIngestionTool) reads that JSON file and
+writes it into `ConfigurationDbContext` — the exact same database and tables
+IdentityServerHost's `AddConfigurationStore()` reads from (Phase 5). It's its own console
+project, run separately from IdentityServerHost itself:
+
+```bash
+cd src/Tools/ConfigIngestionTool
+dotnet run
+```
+
+**Where this matches the real IdG:** the real system's config was never seeded in code
+either — an external **Data Ingestion Tool**
+(`src/Tools/IdentityGatewayConfigurationExporter` in that repo) wrote Clients/Resources
+directly into the same standard Duende tables this sample uses. That tool has since been
+deleted from the real codebase (only empty `bin`/`obj` folders remain), so its actual
+input format and update strategy are lost — `ConfigIngestionTool`'s JSON shape and
+ingestion logic are this course's own design, not a faithful reproduction of code nobody
+can read anymore.
+
+**Where this sample simplifies — the update strategy:** a key already in the database
+(matched by `ClientId`, or `Name` for the three resource types) gets deleted and
+reinserted from the JSON outright, not patched field-by-field. A key missing from the
+JSON is left alone — this tool doesn't delete rows the file doesn't mention. A stricter
+"full sync" would also prune those; this course picked the safer, more conservative
+default on purpose (accidentally deleting a manually-added row is worse than leaving a
+stale one behind), and doesn't know whether the real, deleted tool worked the same way.
+
+**Because IdentityServerHost no longer seeds anything** (`Data/SeedData.cs` now only
+calls `Database.Migrate()` on all three contexts, see Phase 5's section above for why it
+used to seed), a freshly-migrated database has zero rows in `Clients` until someone runs
+this tool. That's expected, not a bug — the same two-step "apply schema, then ingest
+config" a real deployment actually goes through, now visible as two separate commands
+instead of one `dotnet run` doing both.
+
+### Two things that broke while building this
+
+1. **A console app's "current directory" is not its build output directory.** The tool's
+   first version resolved its `appsettings.json` and the JSON config path against
+   `AppContext.BaseDirectory` (`bin/Debug/net10.0/`) — `dotnet run` failed immediately,
+   looking for the config file several directories short of where it actually lives.
+   Every other project in this course is run as `cd src/X && dotnet run`, so this tool
+   resolves both paths against `Directory.GetCurrentDirectory()` instead, matching that
+   same convention — and matching how `appsettings.json` loading works for every
+   ASP.NET Core project in this repo already, which is *why* this wasn't caught earlier:
+   it's the default for a `WebApplication`, just not for a bare console app, which has to
+   opt in explicitly.
+2. **`ConfigurationDbContext` needs a `ConfigurationStoreOptions` it can't get on its
+   own.** Constructing it directly (`new ConfigurationDbContext(dbContextOptions)`)
+   throws inside `OnModelCreating` — it resolves `ConfigurationStoreOptions` from its own
+   internal service provider, which `AddConfigurationStore()` populates for free inside
+   an ASP.NET Core host, but nothing populates for a plain console app building the
+   context by hand. Fixed by constructing a minimal `ServiceCollection` with that one
+   type registered as a singleton alongside `AddDbContext<ConfigurationDbContext>()`,
+   the smallest container that satisfies what `OnModelCreating` actually asks for.
+
+### Verification
+
+`pwsh ./test-phase6.ps1` corrupts `mvcclient`'s `RequireConsent` flag directly in SQL
+Server (simulating drift), re-runs `ConfigIngestionTool`, confirms the row is back to
+matching the JSON, and re-runs `test-phase2.ps1`'s full login flow to prove the restored
+client actually works — not just that the column looks right.
+
+### What's deliberately still missing
+
+- **No "full sync" / prune option.** A row the JSON file doesn't mention is never
+  deleted, only ever left alone or replaced. See "Where this sample simplifies" above.
+- **No dry-run mode.** The tool always writes; there's no way to preview a diff before
+  committing it, something a real config-management tool would likely have.
+- **One JSON file for everything.** The real IdG's actual ingestion format (environment
+  overlays, per-tenant files, whatever it actually was) is unknown — lost with the
+  deleted tool.
+
 ## Running it
 
-0. **Prerequisite (Phase 5+): SQL Server LocalDB.** `IdentityServerHost` now needs a
-   `(localdb)\mssqllocaldb` instance reachable at startup — it ships with Visual Studio,
-   or install it standalone via the SQL Server Express LocalDB installer. No manual setup
-   beyond that: `dotnet run` creates the `MiniIdG` database, applies migrations, and
-   seeds it on first startup.
+0. **Prerequisites.**
+   - **(Phase 5+) SQL Server LocalDB.** `IdentityServerHost` needs a
+     `(localdb)\mssqllocaldb` instance reachable at startup — it ships with Visual
+     Studio, or install it standalone via the SQL Server Express LocalDB installer.
+     `dotnet run` creates the `MiniIdG` database and applies migrations on its own; it no
+     longer seeds any rows (Phase 6).
+   - **(Phase 6+) Run the data-ingestion tool once** — `cd src/Tools/ConfigIngestionTool
+     && dotnet run` — after `IdentityServerHost` has run at least once (to create the
+     database/schema) and before logging in anywhere (there are no clients until this
+     runs). Safe to re-run any time
+     [`Configurations/IdentityServerConfig.json`](Configurations/IdentityServerConfig.json)
+     changes.
 
 1. **Five terminals** — every project's `launchSettings.json` already pins its own port
    (`https://localhost:5001` for IdentityServerHost, `5011` ExternalIdp, `5006`
@@ -819,8 +937,10 @@ for the exact steps.
    step 5; [`test-phase4.ps1`](../../test-phase4.ps1) is the federated-login scenario
    from step 6; [`test-phase5.ps1`](../../test-phase5.ps1) re-runs phases 2–4 against the
    now DB-backed server and queries LocalDB directly to confirm the seed/provisioning
-   landed in SQL Server. None of the seven drive real browser JavaScript, so steps 2–4
-   above still need a manual pass at least once (see `ReactSpa`'s README for why):
+   landed in SQL Server; [`test-phase6.ps1`](../../test-phase6.ps1) corrupts a client
+   directly in the database and confirms `ConfigIngestionTool` restores it. None of the
+   eight drive real browser JavaScript, so steps 2–4 above still need a manual pass at
+   least once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
@@ -830,6 +950,7 @@ for the exact steps.
    pwsh ./test-phase3.ps1
    pwsh ./test-phase4.ps1
    pwsh ./test-phase5.ps1
+   pwsh ./test-phase6.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -854,6 +975,10 @@ for the exact steps.
   (test-user credentials) are still hard-coded in-memory on purpose — the real IdG has no
   local password login at all, and `Tenants.cs` is deliberately unported until Phase 7
   (see the roadmap).
+- ~~**Config baked into a compiled C# file.**~~ Resolved in Phase 6 — `Config.cs` is
+  gone; `Configurations/IdentityServerConfig.json` plus
+  `../Tools/ConfigIngestionTool` are the source of truth now, editable and re-ingested
+  without a rebuild.
 - **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
   configurable external-id claim name, no duplicate-claim handling — Carol's `name`
   claim just works because ExternalIdp only ever sends one of it.

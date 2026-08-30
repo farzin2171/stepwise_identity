@@ -66,12 +66,19 @@ SampleApi's claims-only abstraction over "who is calling" — a `User` identity 
 suffix instead) — ported from `Services.Authorization`.
 _Avoid_: "caller," "principal" alone.
 
-**Config.cs** (IdentityServerHost):
-The static list of Clients/Resources/Scopes. Before Phase 5 this list *was* the store
-(`.AddInMemory*()`); as of Phase 5 it's seed data only — `SeedData.EnsureSeedData` writes
-it into the database once, standing in for the real IdG's own (since-deleted) Data
-Ingestion Tool.
-_Avoid_: "the config store" — that's `ConfigurationDbContext` now, a different thing.
+**IdentityServerConfig.json**:
+The JSON file holding Clients/Resources/Scopes — config as data, not compiled code.
+Replaced `Config.cs` outright in Phase 6 (deleted, not deprecated). Read only by
+`ConfigIngestionTool`, never by IdentityServerHost itself.
+
+**ConfigIngestionTool**:
+The standalone console tool (`src/Tools/ConfigIngestionTool`) that writes
+`IdentityServerConfig.json` into `ConfigurationDbContext` — this course's own stand-in
+for the real IdG's since-deleted Data Ingestion Tool
+(`IdentityGatewayConfigurationExporter`). Run explicitly and separately from
+`dotnet run`ning IdentityServerHost, never automatically at its startup.
+_Avoid_: "the seed step" — `SeedData` (IdentityServerHost) only migrates schema now; it
+doesn't seed rows as of Phase 6.
 
 **TenantClient** / **UserClient** (real IdG, not yet ported):
 The real IdG's own HTTP clients to sibling DIT microservices — `TenantClient.GetTenantAsync`

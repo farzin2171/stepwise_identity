@@ -37,7 +37,7 @@ builder.Services.AddAuthentication(options =>
        .AddCookie("cookies")
        .AddOpenIdConnect("oidc", options =>
        {
-           options.Authority = "http://localhost:5000";
+           options.Authority = "https://localhost:5001";
            options.ClientId = "mvcclient";
            options.ClientSecret = "secret";
            options.ResponseType = "code";
@@ -115,7 +115,7 @@ Three things make this work, none of them SampleApi-specific magic:
    (showing tokens on the secure page). It's the same setting that makes
    `HttpContext.GetTokenAsync("access_token")` return anything at all here.
 3. **`builder.Services.AddHttpClient("SampleApi", ...)`** — a named `HttpClient`
-   pointed at `http://localhost:5003`. This app never validates the token itself; it
+   pointed at `https://localhost:5007`. This app never validates the token itself; it
    just attaches it as a `Bearer` header and lets SampleApi do that work independently.
 
 This is the same pattern the real IdG's clients use to call the real IdG's protected
@@ -137,7 +137,7 @@ this `HttpClient`'s base address) and its Polly retry/circuit-breaker policies c
 notably **doesn't** need `AddHttpClient`, `GetTokenAsync`, or any server-side code at
 all — it just calls `fetch()` directly from the browser with the token already sitting
 in `sessionStorage`. It also needed something this app never did: a CORS policy on
-SampleApi itself, because that call crosses origins (`:5173` → `:5003`) in a way this
+SampleApi itself, because that call crosses origins (`:5173` → `:5007`) in a way this
 app's server-to-server call never does. See its README for the comparison.
 
 ## Running it
@@ -152,13 +152,13 @@ Quick version:
 cd ../IdentityServerHost && dotnet run
 
 # terminal 2
-cd . && dotnet run --urls http://localhost:5002
+cd . && dotnet run --urls https://localhost:5006
 
 # terminal 3
-cd ../SampleApi && dotnet run --urls http://localhost:5003
+cd ../SampleApi && dotnet run --urls https://localhost:5007
 ```
 
-Then browse to `http://localhost:5002` and try either link:
+Then browse to `https://localhost:5006` and try either link:
 
 - *Go to the secure page* — no tenant hint, works for any local user.
 - *Log in as Acme Corp* — sign in as `alice`/`alice` (succeeds, `tenant_id: acme` on the

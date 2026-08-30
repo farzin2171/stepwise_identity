@@ -1,0 +1,59 @@
+{
+  "identityResources": [
+    { "kind": "OpenId" },
+    { "kind": "Profile" },
+    {
+      "name": "tenant",
+      "displayName": "Tenant",
+      "userClaims": [ "tenant_id" ]
+    }
+  ],
+
+  "apiScopes": [
+    { "name": "api1", "displayName": "Sample API access" }
+  ],
+
+  "apiResources": [
+    {
+      "name": "api1",
+      "displayName": "Mini IdG Sample API",
+      "scopes": [ "api1" ],
+      "userClaims": [ "name", "email", "tenant_id" ]
+    }
+  ],
+
+  "clients": [
+    {
+      "clientId": "mvcclient",
+      "clientSecret": "secret",
+      "allowedGrantTypes": [ "authorization_code" ],
+      "requirePkce": true,
+      "requireConsent": false,
+      "redirectUris": [ "https://localhost:5006/signin-oidc" ],
+      "postLogoutRedirectUris": [ "https://localhost:5006/signout-callback-oidc" ],
+      "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
+    },
+    {
+      "clientId": "reactspa",
+      "requireClientSecret": false,
+      "allowedGrantTypes": [ "authorization_code" ],
+      "requirePkce": true,
+      "redirectUris": [ "http://localhost:5173/callback" ],
+      "postLogoutRedirectUris": [ "http://localhost:5173" ],
+      "allowedCorsOrigins": [ "http://localhost:5173" ],
+      "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
+    },
+    {
+      "clientId": "mvcclient-svc.acme",
+      "clientSecret": "acme-svc-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "api1" ]
+    },
+    {
+      "clientId": "mvcclient-svc.globex",
+      "clientSecret": "globex-svc-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "api1" ]
+    }
+  ]
+}
