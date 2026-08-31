@@ -35,7 +35,7 @@ function App() {
   // clear, not hidden behind a server the way MvcClient's is.
   async function callApi() {
     setApiResult('Loading...')
-    const response = await fetch('http://localhost:5003/api/identity', {
+    const response = await fetch('http://localhost:5003/api/v1/identity', {
       headers: { Authorization: `Bearer ${auth.user?.access_token}` },
     })
     const body = await response.json()
@@ -68,7 +68,7 @@ function App() {
       </p>
       {apiResult && (
         <div>
-          <p>Response from <code>GET http://localhost:5003/api/identity</code>:</p>
+          <p>Response from <code>GET http://localhost:5003/api/v1/identity</code>:</p>
           <pre style={{ background: '#f4f4f4', border: '1px solid #ddd', padding: '1rem', overflowX: 'auto' }}>
             {apiResult}
           </pre>

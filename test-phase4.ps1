@@ -46,7 +46,7 @@ function NewClient() {
 
 function GetLoginPage($client, $tenantHint) {
     $pkce = NewPkcePair
-    $authorizeUrl = "http://localhost:5000/connect/authorize?client_id=reactspa&redirect_uri=" + `
+    $authorizeUrl = "https://localhost:5001/connect/authorize?client_id=reactspa&redirect_uri=" + `
         [uri]::EscapeDataString("http://localhost:5173/callback") + `
         "&response_type=code&response_mode=query&scope=" + [uri]::EscapeDataString("openid profile tenant") + `
         "&code_challenge=$($pkce.Challenge)&code_challenge_method=S256&state=teststate123" + `
@@ -72,14 +72,14 @@ $challengeHref = [System.Net.WebUtility]::HtmlDecode($challengeHref)
 if (-not $challengeHref) { throw "Could not find the External/Challenge link on the login page" }
 
 Write-Host "3. Click through the federated login: mini-idg -> ExternalIdp -> back..."
-$resp = Follow $client "http://localhost:5000$challengeHref"
+$resp = Follow $client "https://localhost:5001$challengeHref"
 if ($resp.Content -notmatch "Sign in to ExternalIdp") { throw "Expected to land on ExternalIdp's own login page, got: $($resp.Content.Substring(0, [Math]::Min(300, $resp.Content.Length)))" }
 Write-Host "   Landed on ExternalIdp's login page (a completely separate server)." -ForegroundColor Green
 
 $extReturnUrl = [System.Net.WebUtility]::HtmlDecode([regex]::Match($resp.Content, 'name="ReturnUrl" value="([^"]*)"').Groups[1].Value)
 $extVerToken  = [regex]::Match($resp.Content, 'name="__RequestVerificationToken"[^>]*value="([^"]*)"').Groups[1].Value
 $body = @{ Username = "carol"; Password = "carol"; ReturnUrl = $extReturnUrl; __RequestVerificationToken = $extVerToken }
-$resp = Follow $client "http://localhost:5010/Account/Login" "POST" $body "localhost:5173"
+$resp = Follow $client "https://localhost:5011/Account/Login" "POST" $body "localhost:5173"
 
 # ExternalIdp's own authorize callback defaults to response_mode=form_post too (same library default as
 # MvcClient) - one more auto-post form to submit by hand before this continues.
@@ -102,11 +102,11 @@ $tokenBody = @{
     grant_type = "authorization_code"; code = $code
     redirect_uri = "http://localhost:5173/callback"; client_id = "reactspa"; code_verifier = $r.Pkce.Verifier
 }
-$resp = Follow $client "http://localhost:5000/connect/token" "POST" $tokenBody
+$resp = Follow $client "https://localhost:5001/connect/token" "POST" $tokenBody
 if ($resp.StatusCode -ne 200) { throw "Token endpoint failed: $($resp.Content)" }
 
 $accessToken = ($resp.Content | ConvertFrom-Json).access_token
-$userinfoRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "http://localhost:5000/connect/userinfo")
+$userinfoRequest = [System.Net.Http.HttpRequestMessage]::new("GET", "https://localhost:5001/connect/userinfo")
 $userinfoRequest.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $accessToken)
 $userinfoResp = $client.SendAsync($userinfoRequest).GetAwaiter().GetResult()
 $claims = ($userinfoResp.Content.ReadAsStringAsync().GetAwaiter().GetResult()) | ConvertFrom-Json

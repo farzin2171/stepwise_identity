@@ -14,6 +14,9 @@
 # Duende AddDeveloperSigningCredential() throwaway dev signing key — regenerated per machine, never shared
 tempkey.jwk
 
+# Claude Code personal/session-local settings (permission grants etc.) — not shared project config
+.claude/settings.local.json
+
 # ReactSpa (Vite) build output and local env files — node_modules/ is already covered below
 dist/
 dist-ssr/

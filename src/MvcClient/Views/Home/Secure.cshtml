@@ -1,15 +1,19 @@
-@model IEnumerable<System.Security.Claims.Claim>
+@model (IEnumerable<System.Security.Claims.Claim> Claims, MvcClient.Infrastructure.MultiTenant.Tenant? Tenant)
 @{ Layout = null; }
 <!DOCTYPE html>
 <html>
 <head><title>Mini IdG — Secure Page</title></head>
 <body style="font-family: sans-serif; max-width: 480px; margin: 4rem auto;">
   <h2>You're signed in</h2>
+  <p>
+    <strong>Tenant (from <code>ITenantContext</code>):</strong>
+    @(Model.Tenant is not null ? $"{Model.Tenant.Name} ({Model.Tenant.Key})" : "none resolved")
+  </p>
   <p>These claims came from the ID token the IdentityServerHost issued:</p>
   <table border="1" cellpadding="6" style="border-collapse: collapse; width: 100%;">
     <thead><tr><th align="left">Claim type</th><th align="left">Value</th></tr></thead>
     <tbody>
-      @foreach (var claim in Model)
+      @foreach (var claim in Model.Claims)
       {
         <tr><td>@claim.Type</td><td>@claim.Value</td></tr>
       }
@@ -17,7 +21,10 @@
   </table>
   <p>
     <a href="/Home/CallApi" style="display: inline-block; padding: 0.5rem 1rem; background: #145; color: #fff; text-decoration: none; border-radius: 4px;">
-      Call the API
+      Call the API (as me)
+    </a>
+    <a href="/Home/CallApiAsServiceAccount" style="display: inline-block; padding: 0.5rem 1rem; background: #8a4000; color: #fff; text-decoration: none; border-radius: 4px;">
+      Call the API (as the service account)
     </a>
   </p>
   <p><a href="/Home/Index">Back</a></p>

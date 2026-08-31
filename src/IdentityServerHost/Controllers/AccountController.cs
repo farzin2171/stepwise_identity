@@ -1,6 +1,8 @@
 using Duende.IdentityServer;
 using Duende.IdentityServer.Services;
 using Duende.IdentityServer.Test;
+using IdentityServerHost.Configurations.Authentication;
+using IdentityServerHost.Configurations.Authentication.Helpers;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 
@@ -11,7 +13,11 @@ namespace IdentityServerHost.Controllers;
 // authorize request IdentityServer can't complete) and "here is a page that can ask them to."
 // IdG counterpart: Modules/Account/AccountController.cs (local-login half only — the external-provider
 // half is ExternalController.cs).
-public class AccountController(TestUserStore users, IIdentityServerInteractionService interaction, TenantContext tenantContext) : Controller
+public class AccountController(
+    TestUserStore users,
+    IIdentityServerInteractionService interaction,
+    TenantContext tenantContext,
+    IAuthenticationHelper authenticationHelper) : Controller
 {
     [HttpGet]
     public IActionResult Login(string returnUrl) => View(new LoginViewModel
@@ -20,9 +26,7 @@ public class AccountController(TestUserStore users, IIdentityServerInteractionSe
         TenantDisplayName = tenantContext.DisplayName,
         // No tenant resolved at all -> no external options shown, same fail-closed default the real IdG's
         // IsTenantParameterRequired uses when a client needs a tenant and none was supplied.
-        ExternalSchemes = tenantContext.TenantKey is not null
-            ? Tenants.AllowedExternalSchemes.GetValueOrDefault(tenantContext.TenantKey, [])
-            : []
+        ExternalProviders = authenticationHelper.GetAllAvailableIdentityProviders(tenantContext.TenantKey)
     });
 
     [HttpPost]
@@ -48,9 +52,7 @@ public class AccountController(TestUserStore users, IIdentityServerInteractionSe
                 {
                     ReturnUrl = model.ReturnUrl,
                     TenantDisplayName = tenantContext.DisplayName,
-                    ExternalSchemes = tenantContext.TenantKey is not null
-                        ? Tenants.AllowedExternalSchemes.GetValueOrDefault(tenantContext.TenantKey, [])
-                        : []
+                    ExternalProviders = authenticationHelper.GetAllAvailableIdentityProviders(tenantContext.TenantKey)
                 });
             }
 
@@ -74,7 +76,12 @@ public class AccountController(TestUserStore users, IIdentityServerInteractionSe
         }
 
         ModelState.AddModelError(string.Empty, "Invalid username or password");
-        return View(new LoginViewModel { ReturnUrl = model.ReturnUrl, TenantDisplayName = tenantContext.DisplayName });
+        return View(new LoginViewModel
+        {
+            ReturnUrl = model.ReturnUrl,
+            TenantDisplayName = tenantContext.DisplayName,
+            ExternalProviders = authenticationHelper.GetAllAvailableIdentityProviders(tenantContext.TenantKey)
+        });
     }
 
     [HttpGet]
@@ -90,7 +97,7 @@ public class LoginViewModel
 {
     public string? ReturnUrl { get; set; }
     public string? TenantDisplayName { get; set; }
-    public string[] ExternalSchemes { get; set; } = [];
+    public IEnumerable<IAuthenticationOptions> ExternalProviders { get; set; } = [];
 }
 
 public class LoginInputModel

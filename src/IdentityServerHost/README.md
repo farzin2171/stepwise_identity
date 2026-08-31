@@ -10,8 +10,11 @@ actually is under all its production scaffolding.
 2. Clients ✓ (MVC + React)
 3. Multi-tenancy ✓
 4. External identity providers ✓
-5. Persistence (SQL Server instead of in-memory) ← next
-6. Data ingestion / config tooling
+5. Persistence (SQL Server instead of in-memory) ✓
+6. Data ingestion / config tooling ✓
+7. DIT external-service calls (TenantClient, UserClient) ✓
+8. Signing-key management (Key Vault instead of a developer credential) ✓
+9. IdentityProviderStore (DB-persisted external-provider config) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -94,7 +97,7 @@ Core MVC app — and traces one real, complete **Authorization Code + PKCE** flo
 both applications.
 
 ```
-Browser  ↔  MvcClient (:5002)  —code + PKCE→  IdentityServerHost (:5000)
+Browser  ↔  MvcClient (:5006)  —code + PKCE→  IdentityServerHost (:5001)
 ```
 
 **MvcClient is a "server-side client"** — it runs on a server you control, so it can
@@ -114,8 +117,8 @@ new Client
     RequirePkce = true,
     RequireConsent = false,
 
-    RedirectUris = { "http://localhost:5002/signin-oidc" },
-    PostLogoutRedirectUris = { "http://localhost:5002/signout-callback-oidc" },
+    RedirectUris = { "https://localhost:5006/signin-oidc" },
+    PostLogoutRedirectUris = { "https://localhost:5006/signout-callback-oidc" },
 
     AllowedScopes = { IdentityServerConstants.StandardScopes.OpenId, IdentityServerConstants.StandardScopes.Profile }
 }
@@ -263,7 +266,7 @@ public static IEnumerable<ApiResource> ApiResources =>
     new ApiResource("api1", "Mini IdG Sample API")
     {
         Scopes = { "api1" },
-        UserClaims = { "name", "email" }
+        UserClaims = { "name", "email", "tenant_id" }
     }
 ];
 ```
@@ -275,11 +278,16 @@ public static IEnumerable<ApiResource> ApiResources =>
   `aud` claim at all — there'd be nothing for an API's `ValidAudience` check to compare
   against. This is a common early-Duende-adopter trap: adding only an `ApiScope` and
   wondering why the API rejects every token.
-- **`UserClaims = { "name", "email" }`** — by default an access token carries only
-  protocol claims (`sub`, `scope`, `client_id`, ...), *not* the identity claims that
-  ended up in the ID token via the `profile` scope. An access token and an ID token
-  don't automatically share claims; this list is what copies `name`/`email` onto the
-  access token too, so SampleApi has something more interesting than `sub` to show.
+- **`UserClaims = { "name", "email", "tenant_id" }`** — by default an access token
+  carries only protocol claims (`sub`, `scope`, `client_id`, ...), *not* the identity
+  claims that ended up in the ID token via the `profile`/`tenant` scopes. An access
+  token and an ID token don't automatically share claims; this list is what copies
+  `name`/`email`/`tenant_id` onto the access token too. `tenant_id` was added for
+  SampleApi's own `IIdentityContext` port — without it here, `tenant_id` reached
+  MvcClient's ID token (and its own `ITenantContext`) but never SampleApi's access
+  token at all. See
+  [`../SampleApi/docs/identity-context-and-conventions.md`](../SampleApi/docs/identity-context-and-conventions.md)
+  for what SampleApi does with it.
 
 ### `Config.cs` — both clients now ask for `api1`
 
@@ -310,6 +318,35 @@ button — see `ReactSpa`'s README.
 Same pattern as every other `.AddInMemory...()` call in this file — a real IdG would
 call `.AddApiResources()`/`.AddApiScopes()` against the same SQL-backed configuration
 store as everything else (Phase 5 territory), not a different mechanism.
+
+### `Config.cs` — two more clients, with no user involved at all
+
+```csharp
+new Client
+{
+    ClientId = "mvcclient-svc.acme",
+    ClientSecrets = { new Secret("acme-svc-secret".Sha256()) },
+    AllowedGrantTypes = GrantTypes.ClientCredentials,
+    AllowedScopes = { "api1" }
+},
+new Client
+{
+    ClientId = "mvcclient-svc.globex",
+    ClientSecrets = { new Secret("globex-svc-secret".Sha256()) },
+    AllowedGrantTypes = GrantTypes.ClientCredentials,
+    AllowedScopes = { "api1" }
+}
+```
+
+Added when MvcClient ported `Applications.Apply`'s service-account token pattern — see
+[`MvcClient/docs/multitenancy-and-external-services.md`](../MvcClient/docs/multitenancy-and-external-services.md).
+Every other client in this file uses `GrantTypes.Code` — a human logs in, a browser is
+involved, tokens come back with a `sub`. `GrantTypes.ClientCredentials` is different in
+kind, not just configuration: **no user, no browser, no redirect** — just a direct
+server-to-server POST to `/connect/token` trading a client secret for a token. Two
+clients, one per tenant, each with its own secret, is the load-bearing detail: it means
+revoking or rotating Acme's service-account access can never accidentally affect
+Globex's.
 
 ---
 
@@ -400,12 +437,13 @@ is the concrete version of the real system's mismatch check; the real one runs l
 (after signing in, at the point IdentityServer is about to issue a token) and has an
 escape hatch (`LinkedTenants`) this sample doesn't implement.
 
-> **Known real-system caveat, worth carrying forward:** the actual tenant GUID lookup
-> (`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration =
+> **Known real-system caveat, carried forward and reproduced in Phase 7:** the actual
+> tenant GUID lookup (`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration =
 > DateTimeOffset.MaxValue` — it never expires. A tenant's GUID changing in the source of
-> truth would not be picked up without an app restart. `Tenants.cs` here is a
-> hard-coded dictionary with no cache at all, so the bug can't reproduce in this sample
-> — mentioned so the absence doesn't read as "this sample proves it's fine."
+> truth would not be picked up without an app restart. `Tenants.cs` here is still a
+> hard-coded dictionary with no cache of its own — it resolves *which* tenant, not the
+> tenant's GUID — but Phase 7's `TenantClient`/`SampleProfileService` now reproduce this
+> exact bug for the GUID lookup itself. See Phase 7's section below.
 
 ### `Config.cs` — an opt-in `tenant` scope
 
@@ -430,7 +468,7 @@ depends on the tenant**, built on top of Phase 3's `TenantContext` rather than i
 isolation.
 
 ```
-Browser  ↔  IdentityServerHost (:5000 — mini-idg)  ↔ (Acme only) ↔  ExternalIdp (:5010 — a separate org)
+Browser  ↔  IdentityServerHost (:5001 — mini-idg)  ↔ (Acme only) ↔  ExternalIdp (:5011 — a separate org)
 ```
 
 [`../ExternalIdp`](../ExternalIdp) knows nothing about tenants — it's a plain, second,
@@ -438,20 +476,24 @@ independent Duende IdentityServer with one test user (Carol) and one registered 
 (mini-idg itself). From ExternalIdp's point of view, this project is *just another
 relying party*. Everything tenant-aware lives entirely on this side.
 
-### Per-tenant gating — `Tenants.cs`
+### Per-tenant gating — config-driven, not hardcoded
 
-```csharp
-public static IReadOnlyDictionary<string, string[]> AllowedExternalSchemes => new()
-{
-    ["acme"] = ["external-idp"],
-    ["globex"] = []
-};
+Phase 4's first cut hardcoded a `Tenants.AllowedExternalSchemes` dictionary. That's gone
+now — see [`docs/external-providers-configuration.md`](docs/external-providers-configuration.md)
+for the full write-up of what replaced it and why. Short version: each provider
+declares its own tenant in config —
+
+```json
+// appsettings.Development.json
+"ExternalProviders": { "OpenId": [ { "Name": "external-idp", "EcosystemTenant": "acme", "...": "..." } ] }
 ```
 
-`AccountController.Login` filters this by `tenantContext.TenantKey` and hands the result
-to the view as `ExternalSchemes`. Acme's login page shows a **Sign in with ExternalIdp**
-button above the local form; Globex's shows only the form — the actual HTML the server
-renders differs by tenant, not just a label somewhere.
+— and `AuthenticationHelper.GetAllAvailableIdentityProviders(tenantKey)` filters the
+whole provider list by that field, instead of a second hand-maintained mapping.
+`AccountController.Login` calls that and hands the result to the view as
+`ExternalProviders`. Acme's login page shows a **Sign in with ExternalIdp** button above
+the local form; Globex's shows only the form — the actual HTML the server renders
+differs by tenant, not just a label somewhere.
 
 ### `Controllers/ExternalController.cs` — challenge and callback
 
@@ -482,16 +524,47 @@ relies on; `tenant` riding along in the same dictionary is this sample's additio
 the reason Carol ends up with `tenant_id: acme` even though ExternalIdp never heard the
 word "acme."
 
-### Three things that broke, and what each one actually teaches
+### Four things that broke, and what each one actually teaches
 
-1. **IdentityServer's own cookies default to `SameSite=None` without `Secure`.** The
-   framework logs a warning (`"idsrv.external" has set 'SameSite=None' and must also set
-   'Secure'`) but still sets the cookie — a real browser would refuse to store it. Same
-   shape as Phase 2's correlation-cookie problem, just on *IdentityServer's own* session
-   cookies (`idsrv`, `idsrv.external`, `idsrv.session`) instead of the OIDC client
-   handler's. Already fixed for all three by the blanket
-   `ConfigureAll<CookieAuthenticationOptions>(...)` this project added in Phase 2 — one
-   fix, no per-scheme repetition needed.
+1. **IdentityServer's own cookies default to `SameSite=None` without `Secure` — and this
+   is a hard browser rejection, not just a logged warning.** The framework logs a
+   warning (`"idsrv.external" has set 'SameSite=None' and must also set 'Secure'`), but
+   the real consequence is worse than the log line suggests: a real browser refuses to
+   *store* a `SameSite=None` cookie sent without `Secure` at all, full stop. Same shape
+   as Phase 2's correlation-cookie problem, just on *IdentityServer's own* session
+   cookies instead of the OIDC client handler's — fixed here the same way, with the
+   blanket `ConfigureAll<CookieAuthenticationOptions>(...)` this project added in Phase 2.
+   **That fix does not cover `idsrv.session`, though**, despite this README previously
+   claiming otherwise — see the dedicated note below, and the real bug this caused.
+   **And it has to be applied separately to every project that's its own Duende
+   IdentityServer.** `../ExternalIdp` is a second, completely independent ASP.NET Core
+   app with its own `Program.cs` — the fix here does nothing for it. Missing it there
+   was a real, confirmed bug (not a documentation nitpick): traced with a raw
+   `HttpClient` that doesn't enforce cookie policy, the federated login always
+   succeeded; traced with the browser's actual `Secure`/`SameSite` rules in mind
+   (inspecting the literal `Set-Cookie` headers), ExternalIdp's own `idsrv` cookie came
+   back `samesite=none` with no `Secure`, over plain HTTP — a real browser would drop it
+   outright, and Carol's sign-in on ExternalIdp would never survive the redirect back
+   into ExternalIdp's *own* `/connect/authorize/callback`. Fixed by adding the same
+   `ConfigureAll<CookieAuthenticationOptions>(...)` call to `ExternalIdp/Program.cs`.
+   **The concrete lesson:** a scripted HTTP-client test proves your *logic* is correct;
+   it does not prove your cookies survive a real browser's policy enforcement. Both are
+   needed, and neither substitutes for the other.
+
+   > **The `idsrv.session` cookie needs a *different* fix, in a *different* place.**
+   > `ConfigureAll<CookieAuthenticationOptions>` only touches cookies written through
+   > ASP.NET Core's standard cookie-authentication handler. `idsrv.session` isn't one of
+   > those — it's written directly by Duende's own session-management service, for the
+   > cross-origin check-session-iframe feature (which defaults its `SameSite` to `None`
+   > for exactly that reason, and which neither MvcClient nor ReactSpa implements).
+   > Relaxing it takes a separate, dedicated setting:
+   > `options.Authentication.CheckSessionCookieSameSiteMode = SameSiteMode.Lax;` inside
+   > `AddIdentityServer(options => { ... })` — in **both** `IdentityServerHost/Program.cs`
+   > and `ExternalIdp/Program.cs`. The takeaway generalizes beyond this one cookie: not
+   > every cookie a framework sets goes through the options object you'd naturally reach
+   > for first, and "I called the blanket fix" isn't the same as verifying every cookie
+   > actually changed — which is exactly what inspecting raw `Set-Cookie` headers, not
+   > just trusting a passing test, caught here.
 2. **`response_mode=form_post` cascades — there isn't just one auto-post form in a
    federated login, there are two.** One from ExternalIdp's own authorize callback
    (handing the code back to mini-idg), and — because mini-idg's *own* pending authorize
@@ -509,6 +582,21 @@ word "acme."
    system's answer: **persist what you provisioned, and have the profile service look it
    up.** The naive approach would have taught the wrong mental model even though it
    happened to compile.
+4. **Every external provider is itself a Duende IdentityServer, so it advertises Pushed
+   Authorization Requests (PAR) too — and this hop needed the same fix MvcClient did.**
+   Same underlying gotcha as MvcClient's README's "The PAR gotcha this surfaced," one hop
+   further out: IdentityServerHost's own OIDC client registration for `"external-idp"`
+   (in `Configurations/Authentication/OpenId/OpenIdConnectAuthenticationExtensions.cs`)
+   defaults to using PAR against ExternalIdp automatically, which replaces the visible
+   `/connect/authorize?client_id=...&scope=...` query string with an opaque
+   `?request_uri=urn:...&client_id=...`. Duende's default PAR lifetime is 10 minutes and
+   a scripted trace completes through it without issue either way, so this specific hop
+   wasn't confirmed to be *breaking* anything — but it hides every parameter this
+   sample's whole design deliberately keeps visible, and it's the exact same class of
+   surprise MvcClient's own PAR fix was for. Found by watching an actual login trace and
+   asking "why does this URL look different from every other authorize redirect in this
+   repo?" Fixed the same way:
+   `options.PushedAuthorizationBehavior = PushedAuthorizationBehavior.Disable;`.
 
 One more piece worth naming: the default profile service `.AddTestUsers()` registers
 only knows how to answer "is this user active?" for subjects in `TestUsers.Users` — it
@@ -516,26 +604,36 @@ silently rejects Carol ("User is not active," no further detail in the log).
 `Services/SampleProfileService.cs` replaces it, branching on the `idp` claim to ask
 either `TestUserStore` (local) or `ExternalUserStore` (federated).
 
-### `Program.cs` — registering the federation
+### Registering the federation — config-driven
 
 ```csharp
+// Program.cs
 builder.Services.AddAuthentication()
-       .AddOpenIdConnect("external-idp", options =>
-       {
-           options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
-           options.Authority = "http://localhost:5010";
-           options.ClientId = "mini-idg-host";
-           options.ClientSecret = "external-secret";
-           // ...
-       });
+       .AddExternalProvidersFromFile(builder.Configuration);
 ```
 
-`SignInScheme = ExternalCookieAuthenticationScheme` is the whole trick — without it, a
-successful ExternalIdp login would write this app's *main* session cookie directly and
-the user would just be logged in, bypassing `ExternalController.Callback` (and its
-tenant-matching, provisioning, and local-session-issuing logic) entirely. Pointing it at
-the *external* cookie instead makes the ExternalIdp result a short-lived, intermediate
-fact that the callback still has to convert into a real session.
+That one line replaces what used to be a hardcoded `.AddOpenIdConnect("external-idp",
+options => { ... })` block in `Program.cs`. It loops every entry under the
+`ExternalProviders` config section and calls `AddOpenIdConnect` once per provider — see
+[`Configurations/Authentication/ExternalProviderAuthenticationExtensions.cs`](Configurations/Authentication/ExternalProviderAuthenticationExtensions.cs)
+and [`docs/external-providers-configuration.md`](docs/external-providers-configuration.md)
+for the full shape. Inside that per-provider registration
+(`Configurations/Authentication/OpenId/OpenIdConnectAuthenticationExtensions.cs`),
+`SignInScheme = ExternalCookieAuthenticationScheme` is the one line doing the real
+work — without it, a successful ExternalIdp login would write this app's *main* session
+cookie directly and the user would just be logged in, bypassing
+`ExternalController.Callback` (and its tenant-matching, provisioning, and
+local-session-issuing logic) entirely. Pointing it at the *external* cookie instead
+makes the ExternalIdp result a short-lived, intermediate fact that the callback still
+has to convert into a real session.
+
+Adding a second provider — a real Entra ID tenant, say — is now a config change, not a
+code change: see [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md). Wiring
+one up for real also surfaced a "Correlation failed" chain worth understanding in detail
+— a managed-browser policy blocking cookies over plain HTTP, the HTTPS migration that
+forced across every project in the solution, and a `SameSite=Lax` vs. cross-site
+`form_post` issue underneath it — see
+[`docs/correlation-failed-troubleshooting.md`](docs/correlation-failed-troubleshooting.md).
 
 ### What's deliberately still a simplification
 
@@ -549,37 +647,459 @@ fact that the callback still has to convert into a real session.
   [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md) for where that
   complexity actually shows up once you point this at a real Microsoft tenant instead
   of the toy `ExternalIdp`.
-- **`ExternalUserStore` is a `ConcurrentDictionary` that resets on every restart.**
-  Phase 5 is exactly this problem, generalized to every store in the app.
+- ~~**`ExternalUserStore` is a `ConcurrentDictionary` that resets on every restart.**~~
+  Resolved in Phase 5, below — `ExternalUserStore` is SQL-backed now.
+
+## Phase 5 — persistence
+
+Every store so far has been in-memory: `Config.cs`'s Clients/Resources via
+`.AddInMemory*()`, and `ExternalUserStore`'s `ConcurrentDictionary`. Both reset on every
+restart — a real IdG has been running continuously in production for years without
+losing a single registered client. Phase 5 replaces both with SQL Server (LocalDB
+locally), the same shape the real IdG actually uses.
+
+### Duende's own stock EF stores — no custom `IClientStore`/`IResourceStore`
+
+```csharp
+var migrationsAssembly = typeof(Program).Assembly.GetName().Name;
+var connectionString = builder.Configuration.GetConnectionString("IdentityServer");
+
+.AddConfigurationStore(options =>
+    options.ConfigureDbContext = b => b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly)))
+.AddOperationalStore(options =>
+    options.ConfigureDbContext = b => b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly)))
+```
+
+This replaces `.AddInMemoryIdentityResources/ApiScopes/ApiResources/Clients` outright —
+`Config.cs`'s lists are seed data now (see below), not the store itself.
+`AddConfigurationStore` persists Clients/Resources/Scopes; `AddOperationalStore` persists
+grants (refresh tokens, authorization codes, device codes, consent) that previously
+vanished on restart along with everything else.
+
+**Where this matches the real IdG exactly:** it has no custom `IClientStore` or
+`IResourceStore` either — both use Duende's stock EF-backed stores as-is. The real
+system's `CustomConfigurationDbContext`/`CustomPersistedGrantDbContext` subclasses exist
+only to support a legacy DACPAC-migration-assembly quirk from an old IdentityServer v3
+database — not something this sample needed to reproduce.
+
+### `Data/SeedData.cs` — standing in for the real, deleted ingestion tool
+
+The real IdG's Clients/Resources were never seeded in code at all — an external **Data
+Ingestion Tool** wrote them directly into the same standard Duende tables this sample now
+uses, and that tool has since been deleted from that codebase (the concept lives on as
+this course's own Phase 6). `SeedData.EnsureSeedData`, called once before `app.Run()`, is
+this sample's stand-in: it migrates all three `DbContext`s, then inserts `Config.cs`'s
+lists into `ConfigurationDbContext` only if it's currently empty — idempotent, safe on
+every restart, and simpler than the real system's `ApplyMigrations`-flag +
+`DatabaseMigrationStartupTask` gate (fine for a single local database; that flag exists
+in the real system to control *when* a shared, multi-instance production database gets
+migrated, a problem this sample doesn't have).
+
+### `Data/UserDbContext.cs` — the real system's other DbContext
+
+The real IdG's persistence isn't *only* Duende's stores — it also has its own,
+completely separate `UserDbContext`/`UserStore` for local user records, independent of
+Duende entirely. `ExternalUserStore`'s new backing store mirrors that split:
+`UserDbContext` owns an `ExternalUser`/`ExternalUserClaim` table pair, and
+`ExternalUserStore` itself kept the exact same public shape it always had
+(`ProvisionAsync`/`FindAsync`, both `async`) — `ExternalController` and
+`SampleProfileService` didn't change at all. The one real change: `ExternalUserStore`
+moved from `AddSingleton<>()` to the default scoped lifetime, because the reason it
+needed to outlive a single request (provisioning has to survive past the request that
+did it, for the token-issuance request that follows) is exactly what the database now
+does instead.
+
+### Verification
+
+`pwsh ./test-phase5.ps1` re-runs the Phase 2–4 HTTP flows against the DB-backed server
+(nothing regressed), then queries LocalDB directly via `sqlcmd` to prove the seed and
+Carol's federated-login provisioning are real rows, not memory. The one thing a script
+can't prove — that state survives an actual process restart, the whole point of this
+phase — needs a manual stop/start of `IdentityServerHost`; see the script's own output
+for the exact steps.
+
+### What's deliberately still missing
+
+- **No custom `IdentityProviderStore`.** `ExternalProviders` is still
+  `appsettings.json`-only — the real IdG persists this in SQL too. Planned for a future
+  phase (see the roadmap).
+- ~~**`AddDeveloperSigningCredential()` is still a throwaway key on disk.**~~ Resolved
+  in Phase 8 — `KeyManagement:Provider: "AzureKeyVault"` swaps in a real Key Vault-backed
+  key. Still the default here, on purpose.
+- **Migrations run automatically on every startup**, no gate. Fine for one local
+  database; the real system's `ApplyMigrations` flag exists for a reason this sample
+  doesn't have yet (a shared, multi-instance production database).
+
+## Phase 6 — data ingestion / config tooling
+
+Phase 5 made this app SQL-backed, but `Data/SeedData.cs` still seeded rows straight from
+`Config.cs` — a C# file, compiled into the app, editable only by changing code and
+redeploying. The real IdG doesn't work that way: config is data, edited and shipped
+independently of the app that reads it. Phase 6 makes that true here too.
+
+### `Configurations/IdentityServerConfig.json` — config is data now, not code
+
+`Config.cs` is gone. In its place,
+[`Configurations/IdentityServerConfig.json`](Configurations/IdentityServerConfig.json)
+holds the exact same four lists — `identityResources`, `apiScopes`, `apiResources`,
+`clients` — as plain JSON:
+
+```json
+{
+  "clients": [
+    {
+      "clientId": "mvcclient",
+      "clientSecret": "secret",
+      "allowedGrantTypes": [ "authorization_code" ],
+      "requirePkce": true,
+      "requireConsent": false,
+      "redirectUris": [ "https://localhost:5006/signin-oidc" ],
+      "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
+    }
+  ]
+}
+```
+
+Grant-type strings (`"authorization_code"`, `"client_credentials"`) are the literal
+protocol values Duende's own `GrantTypes.Code`/`GrantTypes.ClientCredentials` helpers
+produce — the JSON doesn't need its own vocabulary for this, just the wire values.
+Secrets are plaintext in the file (`"secret"`, not a hash) and get hashed at ingestion
+time, the same moment `Config.cs`'s `new Secret("secret".Sha256())` used to — a real
+deployment would pull the plaintext from a vault at that same moment, not commit it.
+
+### `../Tools/ConfigIngestionTool` — a real, standalone ingestion tool
+
+[`../Tools/ConfigIngestionTool`](../Tools/ConfigIngestionTool) reads that JSON file and
+writes it into `ConfigurationDbContext` — the exact same database and tables
+IdentityServerHost's `AddConfigurationStore()` reads from (Phase 5). It's its own console
+project, run separately from IdentityServerHost itself:
+
+```bash
+cd src/Tools/ConfigIngestionTool
+dotnet run
+```
+
+**Where this matches the real IdG:** the real system's config was never seeded in code
+either — an external **Data Ingestion Tool**
+(`src/Tools/IdentityGatewayConfigurationExporter` in that repo) wrote Clients/Resources
+directly into the same standard Duende tables this sample uses. That tool has since been
+deleted from the real codebase (only empty `bin`/`obj` folders remain), so its actual
+input format and update strategy are lost — `ConfigIngestionTool`'s JSON shape and
+ingestion logic are this course's own design, not a faithful reproduction of code nobody
+can read anymore.
+
+**Where this sample simplifies — the update strategy:** a key already in the database
+(matched by `ClientId`, or `Name` for the three resource types) gets deleted and
+reinserted from the JSON outright, not patched field-by-field. A key missing from the
+JSON is left alone — this tool doesn't delete rows the file doesn't mention. A stricter
+"full sync" would also prune those; this course picked the safer, more conservative
+default on purpose (accidentally deleting a manually-added row is worse than leaving a
+stale one behind), and doesn't know whether the real, deleted tool worked the same way.
+
+**Because IdentityServerHost no longer seeds anything** (`Data/SeedData.cs` now only
+calls `Database.Migrate()` on all three contexts, see Phase 5's section above for why it
+used to seed), a freshly-migrated database has zero rows in `Clients` until someone runs
+this tool. That's expected, not a bug — the same two-step "apply schema, then ingest
+config" a real deployment actually goes through, now visible as two separate commands
+instead of one `dotnet run` doing both.
+
+### Two things that broke while building this
+
+1. **A console app's "current directory" is not its build output directory.** The tool's
+   first version resolved its `appsettings.json` and the JSON config path against
+   `AppContext.BaseDirectory` (`bin/Debug/net10.0/`) — `dotnet run` failed immediately,
+   looking for the config file several directories short of where it actually lives.
+   Every other project in this course is run as `cd src/X && dotnet run`, so this tool
+   resolves both paths against `Directory.GetCurrentDirectory()` instead, matching that
+   same convention — and matching how `appsettings.json` loading works for every
+   ASP.NET Core project in this repo already, which is *why* this wasn't caught earlier:
+   it's the default for a `WebApplication`, just not for a bare console app, which has to
+   opt in explicitly.
+2. **`ConfigurationDbContext` needs a `ConfigurationStoreOptions` it can't get on its
+   own.** Constructing it directly (`new ConfigurationDbContext(dbContextOptions)`)
+   throws inside `OnModelCreating` — it resolves `ConfigurationStoreOptions` from its own
+   internal service provider, which `AddConfigurationStore()` populates for free inside
+   an ASP.NET Core host, but nothing populates for a plain console app building the
+   context by hand. Fixed by constructing a minimal `ServiceCollection` with that one
+   type registered as a singleton alongside `AddDbContext<ConfigurationDbContext>()`,
+   the smallest container that satisfies what `OnModelCreating` actually asks for.
+
+### Verification
+
+`pwsh ./test-phase6.ps1` corrupts `mvcclient`'s `RequireConsent` flag directly in SQL
+Server (simulating drift), re-runs `ConfigIngestionTool`, confirms the row is back to
+matching the JSON, and re-runs `test-phase2.ps1`'s full login flow to prove the restored
+client actually works — not just that the column looks right.
+
+### What's deliberately still missing
+
+- **No "full sync" / prune option.** A row the JSON file doesn't mention is never
+  deleted, only ever left alone or replaced. See "Where this sample simplifies" above.
+- **No dry-run mode.** The tool always writes; there's no way to preview a diff before
+  committing it, something a real config-management tool would likely have.
+- **One JSON file for everything.** The real IdG's actual ingestion format (environment
+  overlays, per-tenant files, whatever it actually was) is unknown — lost with the
+  deleted tool.
+
+## Phase 7 — DIT external-service calls
+
+Phase 3's `Tenants.cs` has always been a hardcoded dictionary standing in for something
+the real IdG actually does over HTTP: it calls a sibling DIT microservice to resolve a
+tenant key to a real database GUID. The real system's own docs already named this exact
+gap (`IdentityServerHost/README.md`'s Phase 3 section: *"the actual tenant GUID lookup
+(`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration = DateTimeOffset.MaxValue`
+— it never expires... `Tenants.cs` here is a hard-coded dictionary with no cache at all,
+so the bug can't reproduce in this sample"*). Phase 7 ports the client, and — on
+purpose — the bug.
+
+### `../ExternalServicesStub` — a stand-in for two real DIT microservices
+
+The real `TenantClient`/`UserClient` call a Tenant Management API and a User API —
+independent DIT microservices this course doesn't have. `../ExternalServicesStub`
+collapses both into one small process for the sake of this course, exposing the same two
+routes the real clients actually call: `GET /v1/tenants/GetByKey/{key}` and
+`GET /v2/User/identities/role/{subjectId}`, each backed by a hardcoded dictionary.
+
+### `ExternalServices/TenantClient.cs` / `UserClient.cs` — self-issued JWTs, no secret
+
+```csharp
+var jwt = await tools.IssueClientJwtAsync(
+    tenantOptions.JwtAuthentication.ClientId,
+    lifetime: 300,
+    ct,
+    audiences: [tenantOptions.JwtAuthentication.Audience]);
+
+var request = new HttpRequestMessage(HttpMethod.Get, $"{tenantOptions.Address}/v1/tenants/GetByKey/{tenantKey}");
+request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+```
+
+Every other client-to-IdentityServerHost call in this sample goes through
+`/connect/token` with a registered `Client` and a secret. This one is different in kind:
+`Duende.IdentityServer.IIdentityServerTools.IssueClientJwtAsync` mints a JWT **signed
+with IdentityServerHost's own key** directly, with no OAuth round trip and no registered
+client at all — `IdentityServerHost/Configurations/IdentityServerConfig.json` has no
+entry for `"identityserverhost"` (the `ClientId` in the JWT's `client_id` claim) because
+none is needed. `ExternalServicesStub` trusts the token for the same reason SampleApi
+trusts every other access token in this sample: it's signed by, and validated against,
+the same IdentityServerHost.
+
+**Where this matches the real IdG:** this is the *exact* pattern the real `TenantClient`/
+`UserClient` use — `IIdentityServerTools.IssueClientJwtAsync`, no secret, IdentityServer
+acting as its own OAuth client against its sibling services.
+
+### `SampleProfileService.cs` — one integration point instead of a custom `ITokenResponseGenerator`
+
+The real IdG calls both clients from a custom `EquisoftTokenResponseGenerator`
+(`ITokenResponseGenerator` override) at token-issuance time. This sample already had a
+component that assembles claims at token-issuance time — `SampleProfileService`, built
+in Phase 4 — so that's where both calls went instead of adding a second, parallel
+component for the same job:
+
+```csharp
+var tenantKey = enrichedClaims.FirstOrDefault(c => c.Type == "tenant_id")?.Value;
+if (tenantKey is not null)
+{
+    enrichedClaims.Add(new Claim("tenant_guid", await GetCachedTenantGuidAsync(tenantKey, ct)));
+}
+
+enrichedClaims.Add(new Claim("role", await userClient.GetRoleAsync(subjectId, ct)));
+```
+
+**Where this sample simplifies — additive, not a replacement:** the real IdG's
+`tenant_id` claim *is* this GUID. This sample keeps its existing `tenant_id` claim as the
+friendly key it's always been since Phase 3 and adds `tenant_guid` alongside it, rather
+than changing what `tenant_id` contains — MvcClient's `ITenantContext` and SampleApi's
+`IIdentityContext` both already resolve tenant *from* that key (see `CONTEXT.md`'s
+`TenantClient`/`UserClient` entry), and changing its shape would ripple into both for a
+phase that's only about proving this HTTP-call pattern out.
+
+### The never-expiring cache bug — reproduced on purpose
+
+```csharp
+await cache.SetStringAsync(cacheKey, tenantGuid, new DistributedCacheEntryOptions
+{
+    AbsoluteExpiration = DateTimeOffset.MaxValue
+}, ct);
+```
+
+`GetCachedTenantGuidAsync` wraps `TenantClient.GetTenantAsync` in an `IDistributedCache`
+lookup (in-memory here; Redis in the real system — same interface, same bug either way,
+since the bug is in the cache-entry *options*, not the backing store) keyed on
+`tenant_id_from_key_{tenantKey}`, with the exact same never-expiring
+`AbsoluteExpiration` the real system's own `EquisoftTokenResponseGenerator` uses.
+Verified for real (not just asserted): changing `ExternalServicesStub`'s GUID for
+`acme` and restarting *only* that project — not IdentityServerHost — still returned the
+old, cached GUID on the next login. `UserClient.GetRoleAsync` has no cache at all
+around it — the deliberate contrast sitting right next to it in the same method.
+
+### Verification
+
+`pwsh ./test-phase7.ps1` logs in as two different users/tenants, confirms `tenant_guid`
+and `role` resolve correctly from `ExternalServicesStub` and reach both
+IdentityServerHost's own token and SampleApi's independently-validated copy of it. The
+cache bug itself isn't scripted — reproducing it needs editing `ExternalServicesStub`'s
+code, not just data — see the script's own "try it yourself" output for the exact steps
+(the same steps used to verify the claim above while writing this section).
+
+### What's deliberately still missing
+
+- **Only one of two real clients' full behavior.** The real `UserClient` short-circuits
+  to a fixed `"Guest"` role without calling out at all for guest users — this sample has
+  no guest concept, so every subject always calls out.
+- **No resilience testing.** The Polly retry/circuit-breaker policies (reused verbatim
+  from MvcClient's own) are wired up but never exercised by anything in this course —
+  `ExternalServicesStub` never fails on purpose.
+- **`Tenants.cs` (Phase 3) is unchanged.** It still resolves *which* tenant a login is
+  for from `acr_values`; `TenantClient` only resolves that tenant's *GUID*, a
+  downstream, additive step. The two were never the same concern, even though Phase 3's
+  README caveat could be read that way at a glance.
+
+## Phase 8 — signing-key management
+
+Every token this sample has ever issued was signed with
+`AddDeveloperSigningCredential()` — a throwaway RSA key written to `tempkey.jwk`
+(gitignored) and reused across restarts, but never rotated, never access-controlled,
+and gone the moment someone deletes that file. Phase 1's README named the real IdG's
+actual answer to this from day one: `AddCertificates()`, loading a real certificate
+from Azure Key Vault. Phase 8 ports it.
+
+### `KeyManagement/SigningKeyExtensions.cs` — a dispatcher, not a store
+
+```csharp
+.AddSigningKey(builder.Configuration)
+```
+
+replaces `.AddDeveloperSigningCredential()` directly in `Program.cs`. Reading
+`KeyManagement:Provider`, it either calls `AddDeveloperSigningCredential()` itself
+(`Provider` unset or `"Developer"` — the default, so this sample keeps running with zero
+Azure setup unless you opt in) or registers `AzureKeyVaultKeyStore` for
+`Provider: "AzureKeyVault"`. **Where this sample simplifies:** the real
+`AddCertificates()` branches across three providers (`None`/`Azure`/`Local`, the last one
+loading a certificate from a local file path for on-premise deployments) — this course
+only needed the two ends of that spectrum, so `Local` isn't ported.
+
+### `KeyManagement/AzureKeyVaultKeyStore.cs` — one class, two Duende interfaces
+
+```csharp
+public class AzureKeyVaultKeyStore : ISigningCredentialStore, IValidationKeysStore
+```
+
+Exactly the real IdG's own shape (`IdentityServer/Stores/AzureKeyVaultKeyStore.cs`) — a
+single class answering both "what do I sign with" and "what's currently valid to
+verify with," backed by `Azure.Security.KeyVault.Certificates`' `CertificateClient`.
+`SigningKeyExtensions` registers **one shared instance** for both interfaces
+(`AddSingleton<AzureKeyVaultKeyStore>()`, then two `AddSingleton<TInterface>(sp =>
+sp.GetRequiredService<AzureKeyVaultKeyStore>())` lines) rather than two independent
+ones — otherwise there'd be two separate `CertificateClient`s and two separate cache
+entries for what should be one fact.
+
+### Rollover — every version becomes a validation key; only one signs
+
+```csharp
+var rolloverCutoff = DateTimeOffset.UtcNow.AddHours(-_options.RolloverDelayHours);
+var signingVersion = candidates
+    .Where(c => c.NotBefore <= rolloverCutoff)
+    .OrderByDescending(c => c.NotBefore)
+    .FirstOrDefault() ?? candidates.OrderByDescending(c => c.NotBefore).First();
+```
+
+A new certificate version doesn't immediately start signing tokens — it has to be older
+than `RolloverDelayHours` (48 by default, same as the real system) first. Every
+enabled, non-expired version — including brand-new ones still waiting out that delay —
+becomes a **validation** key regardless, published via `jwks`. That ordering is the
+entire point: a relying party's cached JWKS response has time to pick up a new key as
+*valid* before this store ever picks it to actually *sign* with, and a token signed
+moments before a rotation keeps validating because its signing version never stopped
+being a validation key too.
+
+**A real .NET gotcha, sidestepped rather than worked around:**
+`X509Certificate2.NotBefore`/`NotAfter` are `DateTime` in the **local time zone**, not
+UTC — a well-known trap for exactly this kind of comparison. This store compares
+`Azure.Security.KeyVault.Certificates.CertificateProperties.NotBefore`/`ExpiresOn`
+instead, which the Key Vault SDK returns as `DateTimeOffset`, always UTC — the
+downloaded `X509Certificate2`'s own (local-time) fields are never compared against
+anything here.
+
+### Verified without a real vault: the dispatcher actually dispatches
+
+Without Azure access in this environment, the actual Key Vault round trip couldn't be
+tested end to end here — but the wiring was: pointing `KeyManagement:AzureKeyVault:VaultName`
+at a name that cannot exist and hitting `/.well-known/openid-configuration/jwks`
+produced a real `Azure.RequestFailedException` — DNS resolution failing against
+`nonexistent-vault-xyz123.vault.azure.net`, four retries deep through the Azure SDK's own
+retry policy, with `AzureKeyVaultKeyStore.LoadKeysFromVaultAsync` in the stack trace.
+That's proof the dispatcher genuinely activates the Key Vault path and makes a real
+network attempt — not a silently-successful fallback to the developer key. See
+[`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md) for how to create a
+real vault and verify an actual successful round trip, including certificate rotation.
+
+### Verification
+
+`pwsh ./test-phase8.ps1` confirms the default developer-key path still signs tokens
+normally after adding the Key Vault code path, then prints the manual steps above (the
+same ones used to verify the claim while writing this section) for proving the
+`AzureKeyVault` path is really wired up — restarting a service mid-script with different
+config isn't something any other `test-phaseN.ps1` does either.
+
+### What's deliberately still missing
+
+- **No auto-renewal.** This store reads whatever certificate versions already exist; it
+  never asks Key Vault to issue a new one. A real deployment would pair this with Key
+  Vault's own certificate lifecycle actions (auto-renew before expiry) — out of scope
+  for what this phase is teaching.
+- **No `Local` provider.** See "where this sample simplifies" above.
+- **No resilience policy around the Key Vault calls**, matching the real system exactly
+  — it has none either, relying on the Azure SDK's own built-in retry behavior (visible
+  in the "four retries" trace above).
 
 ## Running it
 
-1. **Five terminals**
+0. **Prerequisites.**
+   - **(Phase 5+) SQL Server LocalDB.** `IdentityServerHost` needs a
+     `(localdb)\mssqllocaldb` instance reachable at startup — it ships with Visual
+     Studio, or install it standalone via the SQL Server Express LocalDB installer.
+     `dotnet run` creates the `MiniIdG` database and applies migrations on its own; it no
+     longer seeds any rows (Phase 6).
+   - **(Phase 6+) Run the data-ingestion tool once** — `cd src/Tools/ConfigIngestionTool
+     && dotnet run` — after `IdentityServerHost` has run at least once (to create the
+     database/schema) and before logging in anywhere (there are no clients until this
+     runs). Safe to re-run any time
+     [`Configurations/IdentityServerConfig.json`](Configurations/IdentityServerConfig.json)
+     changes.
+
+1. **Six terminals** — every project's `launchSettings.json` already pins its own port
+   (`https://localhost:5001` for IdentityServerHost, `5011` ExternalIdp, `5006`
+   MvcClient, `5007` SampleApi, `5012` ExternalServicesStub, `5173` ReactSpa), so a plain
+   `dotnet run` in each is enough:
 
    ```bash
    # terminal 1
    cd src/ExternalIdp
-   dotnet run --urls http://localhost:5010
+   dotnet run
 
    # terminal 2
-   cd src/IdentityServerHost
+   cd src/ExternalServicesStub
    dotnet run
 
    # terminal 3
-   cd src/MvcClient
-   dotnet run --urls http://localhost:5002
+   cd src/IdentityServerHost
+   dotnet run
 
    # terminal 4
-   cd src/SampleApi
-   dotnet run --urls http://localhost:5003
+   cd src/MvcClient
+   dotnet run
 
    # terminal 5
+   cd src/SampleApi
+   dotnet run
+
+   # terminal 6
    cd src/ReactSpa
    npm install   # first time only
    npm run dev
    ```
 
-2. **MVC flow** — browse to `http://localhost:5002`, click *Go to the secure page*, and
+2. **MVC flow** — browse to `https://localhost:5006`, click *Go to the secure page*, and
    sign in as `alice` / `alice` (or `bob` / `bob`). You'll land back on the secure page
    with a table of every claim in your identity — `sub`, `name`, `idp`, and the token
    timestamps. Notably *not* `email`, even though `alice`'s `TestUser` has one and
@@ -602,7 +1122,7 @@ fact that the callback still has to convert into a real session.
    the browser's own `fetch()` calls SampleApi directly across origins (`:5173` →
    `:5003`), which is why SampleApi now has a CORS policy (see its README).
 
-5. **Tenant resolution, in a browser** — from `http://localhost:5002`, click *Log in as
+5. **Tenant resolution, in a browser** — from `https://localhost:5006`, click *Log in as
    Acme Corp* or *Log in as Globex Corporation* (see MvcClient's README for how these
    set `acr_values` before redirecting). Try `alice`/`alice` on Acme (succeeds,
    `tenant_id: acme` on the claims table) and on Globex (rejected — right password,
@@ -616,7 +1136,7 @@ fact that the callback still has to convert into a real session.
 6. **External IdP federation** — from the same *Log in as Acme Corp* link, click
    **Sign in with ExternalIdp** instead of using the local form, and sign in as
    `carol`/`carol` (a user that only exists on the separate ExternalIdp server on port
-   5010) — you'll land back on MvcClient's secure page with `name: Carol Chen` and
+   5011) — you'll land back on MvcClient's secure page with `name: Carol Chen` and
    `tenant_id: acme`, even though ExternalIdp itself never heard the word "acme."
    Globex's login page has no such button at all — try *Log in as Globex Corporation*
    to confirm. [`test-phase4.ps1`](../../test-phase4.ps1) drives the same round trip
@@ -632,8 +1152,17 @@ fact that the callback still has to convert into a real session.
    its *Call the API* button (the `api1` scope, and SampleApi's own CORS policy);
    [`test-phase3.ps1`](../../test-phase3.ps1) is the tenant-resolution scenarios from
    step 5; [`test-phase4.ps1`](../../test-phase4.ps1) is the federated-login scenario
-   from step 6. None of the six drive real browser JavaScript, so steps 2–4 above still
-   need a manual pass at least once (see `ReactSpa`'s README for why):
+   from step 6; [`test-phase5.ps1`](../../test-phase5.ps1) re-runs phases 2–4 against the
+   now DB-backed server and queries LocalDB directly to confirm the seed/provisioning
+   landed in SQL Server; [`test-phase6.ps1`](../../test-phase6.ps1) corrupts a client
+   directly in the database and confirms `ConfigIngestionTool` restores it;
+   [`test-phase7.ps1`](../../test-phase7.ps1) confirms `tenant_guid`/`role` resolve from
+   `ExternalServicesStub` and reach both IdentityServerHost's and SampleApi's tokens;
+   [`test-phase8.ps1`](../../test-phase8.ps1) confirms the default developer signing key
+   still works, then prints manual steps for proving the Key Vault path (see
+   [`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md)). None of the ten
+   drive real browser JavaScript, so steps 2–4 above still need a manual pass at least
+   once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
@@ -642,6 +1171,10 @@ fact that the callback still has to convert into a real session.
    pwsh ./test-spa-api.ps1
    pwsh ./test-phase3.ps1
    pwsh ./test-phase4.ps1
+   pwsh ./test-phase5.ps1
+   pwsh ./test-phase6.ps1
+   pwsh ./test-phase7.ps1
+   pwsh ./test-phase8.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -661,10 +1194,26 @@ fact that the callback still has to convert into a real session.
   missing `ClaimAction` silently dropping `tenant_id` from the merged claims). Wiring the
   same into ReactSpa (`oidc-client-ts`'s `signinRedirect({ acr_values: ... })`) is still
   open — see its README's "try it yourself" section.
-- **Persistence.** Everything still resets to empty on every restart except
-  `tempkey.jwk` (the signing key) — clients, resources, tenants, test users, *and now
-  provisioned external identities* (`ExternalUserStore`) are all in-memory. Phase 5,
-  next, replaces every one of these with a real database.
+- ~~**Persistence.**~~ Resolved in Phase 5 — clients, resources, grants, and provisioned
+  external identities are all SQL Server-backed now. `TestUsers.cs` (test-user
+  credentials) is still hard-coded in-memory on purpose — the real IdG has no local
+  password login at all.
+- ~~**Config baked into a compiled C# file.**~~ Resolved in Phase 6 — `Config.cs` is
+  gone; `Configurations/IdentityServerConfig.json` plus
+  `../Tools/ConfigIngestionTool` are the source of truth now, editable and re-ingested
+  without a rebuild.
+- **`Tenants.cs` is still a hard-coded dictionary, deliberately.** Phase 7 ported the
+  *GUID-lookup* half of the real system's `TenantClient` (see its own section above),
+  not tenant resolution itself — `Tenants.ResolveTenantKey` (*which* tenant a login is
+  for, parsed from `acr_values`) is a different concern from `TenantClient.GetTenantAsync`
+  (*that* tenant's GUID), and only the second one is a real HTTP call in either system.
+- ~~**A throwaway dev signing key, with no production equivalent.**~~ Resolved in
+  Phase 8 — `KeyManagement:Provider: "AzureKeyVault"` swaps in a real Key Vault-backed
+  key, verified to genuinely activate (see its own section above), though not verified
+  against a real vault in this environment — see
+  [`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md) for that. Still
+  defaults to the developer key, on purpose, so this sample runs with zero Azure setup
+  unless you opt in.
 - **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
   configurable external-id claim name, no duplicate-claim handling — Carol's `name`
   claim just works because ExternalIdp only ever sends one of it.
@@ -697,9 +1246,9 @@ click through a real tenant mismatch in a browser — try `bob`/`bob` on Acme, o
 `alice`/`alice` on Globex. Then ask yourself: *"What would `LinkedTenants` actually let
 two tenants share?"* — that's the escape hatch this sample didn't implement.
 
-Try adding a **second** external scheme to `Tenants.AllowedExternalSchemes["acme"]`
-pointing at the same `ExternalIdp` under a different scheme name (you'll need a second
-`.AddOpenIdConnect(...)` registration and client registration to go with it) — what has
-to change for the login page to offer a *choice*? Then ask: *"How would this look with a
-real Entra tenant instead of ExternalIdp?"* — see
+Try adding a **second** `OpenId` entry to `appsettings.Development.json`, `EcosystemTenant: "acme"`,
+pointing at the same `ExternalIdp` under a different `Name` (you'll need a second client
+registration in `ExternalIdp/Config.cs` to go with it) — no `Program.cs` change needed
+this time. What does the login page do differently now? Then ask: *"How would this look
+with a real Entra tenant instead of ExternalIdp?"* — see
 [`docs/azure-entra-b2c-setup.md`](docs/azure-entra-b2c-setup.md) for exactly that.

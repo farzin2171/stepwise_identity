@@ -9,14 +9,14 @@
   {
     <p style="color: #991b1b;">@ViewData.ModelState.Values.First().Errors.First().ErrorMessage</p>
   }
-  @if (Model.ExternalSchemes.Length > 0)
+  @if (Model.ExternalProviders.Any())
   {
     <div style="margin-bottom: 1.2rem;">
-      @foreach (var scheme in Model.ExternalSchemes)
+      @foreach (var provider in Model.ExternalProviders)
       {
-        <a href="/External/Challenge?scheme=@scheme&returnUrl=@Uri.EscapeDataString(Model.ReturnUrl ?? "")"
+        <a href="/External/Challenge?scheme=@provider.Name&returnUrl=@Uri.EscapeDataString(Model.ReturnUrl ?? "")"
            style="display: block; padding: 0.5rem; margin-bottom: 0.5rem; background: #eef6ff; border: 1px solid #bcd; text-align: center; text-decoration: none; color: #145;">
-          Sign in with @IdentityServerHost.Tenants.SchemeDisplayNames[scheme]
+          Sign in with @provider.DisplayName
         </a>
       }
     </div>

@@ -1,25 +1,40 @@
-using System.Collections.Concurrent;
 using System.Security.Claims;
+using IdentityServerHost.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace IdentityServerHost;
 
-// Persists provisioned external identities for the lifetime of THIS PROCESS — a step up from not
-// persisting them at all (IProfileService's context.Subject can't see claims from the first-login
-// principal later, see SampleProfileService.cs), but still just a ConcurrentDictionary: restart this
-// app and Carol's provisioned identity is gone, forcing a full re-federation to ExternalIdp for no real
-// reason. IdG counterpart: Data/Stores/UserStore.cs, first-login provisioning, backed by SQL Server
-// instead. Phase 5 replaces this dictionary with exactly that kind of real persistence — same public
-// shape (still async, so callers don't change), different backing store.
-public class ExternalUserStore
+// Persists provisioned external identities in SQL Server via UserDbContext — Phase 5
+// replaced the ConcurrentDictionary this used to be with exactly that kind of real
+// persistence, same public shape (still async, so ExternalController and
+// SampleProfileService didn't have to change at all). IdG counterpart:
+// Data/Stores/UserStore.cs, first-login provisioning against its own UserDbContext.
+// Registered with the default (scoped) DbContext lifetime now, not AddSingleton<>() —
+// the reason it used to need a process-lifetime singleton (provisioning has to survive
+// past the request that did it, for the token-issuance request that follows) is exactly
+// what the database now does instead.
+public class ExternalUserStore(UserDbContext db)
 {
-    private readonly ConcurrentDictionary<string, List<Claim>> _users = new();
-
-    public Task ProvisionAsync(string subjectId, IEnumerable<Claim> claims)
+    public async Task ProvisionAsync(string subjectId, IEnumerable<Claim> claims)
     {
-        _users[subjectId] = claims.ToList();
-        return Task.CompletedTask;
+        var user = await db.Users.Include(u => u.Claims).FirstOrDefaultAsync(u => u.SubjectId == subjectId);
+        if (user is null)
+        {
+            user = new ExternalUser { SubjectId = subjectId };
+            db.Users.Add(user);
+        }
+        else
+        {
+            db.UserClaims.RemoveRange(user.Claims);
+        }
+
+        user.Claims = claims.Select(c => new ExternalUserClaim { SubjectId = subjectId, Type = c.Type, Value = c.Value }).ToList();
+        await db.SaveChangesAsync();
     }
 
-    public Task<List<Claim>?> FindAsync(string subjectId) =>
-        Task.FromResult(_users.GetValueOrDefault(subjectId));
+    public async Task<List<Claim>?> FindAsync(string subjectId)
+    {
+        var user = await db.Users.Include(u => u.Claims).FirstOrDefaultAsync(u => u.SubjectId == subjectId);
+        return user?.Claims.Select(c => new Claim(c.Type, c.Value)).ToList();
+    }
 }

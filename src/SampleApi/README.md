@@ -8,9 +8,16 @@ token *issuer* (IdentityServerHost) or a token *consumer that logs a human in*
 (MvcClient). SampleApi is the third role: a service that a client calls *on behalf of*
 a logged-in user, using a token that user's login produced.
 
+SampleApi also now carries a port of `Services.Authorization`'s (the real production
+DIT authorization-decision service) identity/claims plumbing and API conventions:
+[`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md)
+— `IIdentityContext`, claims-only multi-tenancy for a caller with no browser, route
+versioning, `ProblemDetails`, and a service-account-only endpoint filter, each section
+compared against the real code it was ported from.
+
 ```
-Browser  ↔  MvcClient (:5002)  —Bearer token (server-to-server)→  SampleApi (:5003)
-Browser  ↔  ReactSpa (:5173)   —Bearer token (browser fetch())──→  SampleApi (:5003)
+Browser  ↔  MvcClient (:5006)  —Bearer token (server-to-server)→  SampleApi (:5007)
+Browser  ↔  ReactSpa (:5173)   —Bearer token (browser fetch())──→  SampleApi (:5007)
                   ↑                                    ↑
              logs the user in                  never talks to IdentityServerHost
              against IdentityServerHost        directly — only downloads its public
@@ -26,7 +33,7 @@ that difference is why this project needs a CORS policy at all (see below).
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
        .AddJwtBearer(options =>
        {
-           options.Authority = "http://localhost:5000";
+           options.Authority = "https://localhost:5001";
            options.TokenValidationParameters.ValidAudience = "api1";
        });
 
@@ -37,13 +44,14 @@ builder.Services.AddAuthorization(options =>
 ```
 
 - **`Authority`** — on the *first* request that needs to validate a token, the JWT
-  Bearer middleware fetches `http://localhost:5000/.well-known/openid-configuration`,
+  Bearer middleware fetches `https://localhost:5001/.well-known/openid-configuration`,
   reads `jwks_uri` from it, and downloads IdentityServerHost's public signing key. It
   caches all of this. Every request after that validates the token's signature
   **entirely locally** — no network round trip back to IdentityServerHost per request.
   This is why JWT Bearer scales to many API replicas with no shared session store.
-- **`ValidAudience = "api1"`** — must match the `ApiResource` name configured in
-  `IdentityServerHost/Config.cs`. Duende stamps that name into every access token's
+- **`ValidAudience = "api1"`** — must match the `apiResources` entry's `name` configured
+  in `IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6). Duende
+  stamps that name into every access token's
   `aud` claim. A token minted for some *other* audience — even a perfectly valid,
   unexpired one — is rejected here before any of this API's own code runs.
 
@@ -60,21 +68,47 @@ expired — that was issued for some *other* API still fails this check, because
 puts a `scope` claim per requested scope in the token and this one won't have `api1`
 among them.
 
-## The one endpoint
+## The identity endpoint — now versioned
 
 ```csharp
-app.MapGet("/api/identity", (HttpContext ctx) => Results.Ok(new
+var api = app.MapGroup("/api/v{version:apiVersion}").WithApiVersionSet(versionSet).HasApiVersion(1.0);
+
+api.MapGet("/identity", (HttpContext ctx, IIdentityContext identityContext) => Results.Ok(new
 {
     message = "...",
+    identity = new { identityContext.IdentityType, identityContext.Subject, identityContext.ClientId, identityContext.TenantKey },
     claims = ctx.User.Claims.Select(c => new { c.Type, c.Value })
 })).RequireAuthorization("ApiScope");
 ```
 
-It just echoes back every claim the incoming access token carried, once validation and
-the scope policy both pass. That's deliberate: the point of this project isn't the
-business logic (there is none) — it's proving, end to end, that a token minted by
-IdentityServerHost for a login that happened in MvcClient is independently verifiable by
-a completely separate process that has never talked to either of them before.
+The route is `/api/v1/identity` now, not `/api/identity` — see
+[`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#2-api-versioning--aspversioninghttp)
+for the versioning port this came from. It still just echoes back every claim the
+incoming access token carried, once validation and the scope policy both pass — that's
+deliberate: the point of this project isn't the business logic (there is none) — it's
+proving, end to end, that a token minted by IdentityServerHost for a login that
+happened in MvcClient is independently verifiable by a completely separate process
+that has never talked to either of them before. The one addition, `identity`, is a
+port of `Services.Authorization`'s `IIdentityContext` — see the doc above for how it
+tells a real user and a service-account caller apart, and how it resolves "which
+tenant" purely from claims, with no hostname or UI involved at all.
+
+## The other endpoint — service accounts only
+
+```csharp
+api.MapDelete("/admin/cache/{tenantKey}", (string tenantKey) => Results.Ok(new
+{
+    message = $"Cache cleared for tenant '{tenantKey}' (simulated — this sample has no real cache)."
+})).AddEndpointFilter<ServiceAccountOnlyFilter>();
+```
+
+Modeled on `Services.Authorization`'s real cache-invalidation endpoint — a
+service-to-service call, never a human's. `ServiceAccountOnlyFilter` decides who gets
+through entirely on its own, without the formal `[Authorize]`/policy system: no token
+at all gets a `401`, a real user's own token (however validly authenticated) gets a
+`403`, and only a client-credentials token gets through to the `200`. See the doc above
+for the full comparison, including a `ProblemDetails` boundary this port surfaced while
+testing it.
 
 ## Why `name` and `email` show up in the response
 
@@ -82,9 +116,10 @@ By default, an **access token** carries only protocol claims — `sub`, `scope`,
 `client_id`, `aud`, and so on — *not* the identity claims (`name`, `email`) that ended
 up in the **ID token** via the `profile` scope. An access token and an ID token don't
 automatically share claims; each side has to ask for what it needs. That's what
-`UserClaims = { "name", "email" }` on the `ApiResource` in
-`IdentityServerHost/Config.cs` does — it tells Duende "when a token is issued for
-`api1`, also copy these claims onto it, if the user granted the scopes that carry them."
+`"userClaims": [ "name", "email" ]` on the `api1` entry in
+`IdentityServerHost/Configurations/IdentityServerConfig.json` (Phase 6) does — it tells
+Duende "when a token is issued for `api1`, also copy these claims onto it, if the user
+granted the scopes that carry them."
 
 ## CORS — needed for ReactSpa, not for MvcClient
 
@@ -104,7 +139,7 @@ MvcClient calls this API from server-side C# code — an `HttpClient` running in
 ASP.NET Core process, not inside a browser. The browser's same-origin policy (and CORS,
 which relaxes it) is a browser-enforced rule; server-to-server calls were never subject
 to it. ReactSpa calls this API with the browser's own `fetch()`, from a *different
-origin* (`localhost:5173` calling `localhost:5003`), which makes every request subject
+origin* (`localhost:5173` calling `localhost:5007`), which makes every request subject
 to CORS. Without this policy, the browser sends a preflight `OPTIONS` request before the
 real `GET`, gets no `Access-Control-Allow-Origin` header back, and refuses to send the
 real request at all — this API's `[Authorize]`/scope checks never even get a chance to
@@ -126,12 +161,19 @@ can confirm it refuses anonymous traffic:
 
 ```bash
 cd src/SampleApi
-dotnet run --urls http://localhost:5003
+dotnet run --urls https://localhost:5007
 
 # in another terminal
-curl -i http://localhost:5003/api/identity
+curl -i https://localhost:5007/api/v1/identity
 # HTTP/1.1 401 Unauthorized
 ```
+
+Prefer not to click through a browser? Standalone against SampleApi + IdentityServerHost only:
+[`../../test-sampleapi-identity-context.ps1`](../../test-sampleapi-identity-context.ps1)
+(repo root) drives a user login and a service-account token exchange, then calls both
+endpoints above with each — see
+[`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#running-it)
+for exactly what it proves.
 
 ## What's deliberately missing (and why)
 
@@ -142,3 +184,8 @@ curl -i http://localhost:5003/api/identity
 - **Refresh / introspection support.** This API only validates self-contained JWTs. A
   real IdG-protected API sometimes also needs reference-token introspection for
   short-lived, revocable tokens — out of scope for this sample.
+- **`Services.Authorization`'s actual business logic** (the `Authorize`/`Evaluate`
+  endpoints, its SQL Server + Redis policy store, the dynamic
+  `IAuthorizationPolicyProvider` that resolves any policy name via a remote call) — see
+  [`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#what-s-deliberately-not-ported)
+  for the full list of what was and wasn't ported from it.
