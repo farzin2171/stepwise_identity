@@ -51,10 +51,51 @@ _Avoid_: "user store" alone — ambiguous with `TestUserStore`, Duende's own loc
 store.
 
 **EcosystemTenant**:
-The config field on each entry under the `ExternalProviders` section naming which tenant
-that external provider belongs to. The real IdG resolves this from the *scheme name*
-instead — a real difference in shape, not just a simplification.
+The field naming which tenant an external provider belongs to — a config field on each
+entry under the `ExternalProviders` section, or (as of Phase 9) a key in a database-backed
+provider's `Properties` bag. Either way it's read through `IAuthenticationOptions`.
+
+Corrected in Phase 9: this entry used to say the real IdG "resolves this from the *scheme
+name* instead." That's wrong as stated. The real IdG's database rows carry an explicit
+`EcosystemTenant` property, exactly like this sample's (see the real repo's
+`config/identityProviders.json`). The genuine difference is elsewhere — the real IdG
+doesn't use `EcosystemTenant` to decide *which providers a tenant's login page shows*. It
+asks the client instead, via `IdentityProviderRestrictions` plus a client property named
+after the tenant holding an ordered scheme list. That difference is real and load-bearing
+(it lets two tenants share one provider, which this sample can't).
 _Avoid_: "tenant" alone.
+
+**Dynamic provider**:
+An external identity provider that doesn't exist as a registered authentication scheme at
+startup — it's a row in the `IdentityProviders` table, resolved by `IdentityProviderStore`
+on the request that needs it and served under `/federation/{scheme}/`. Duende's own term.
+Contrast with the Phase 4 file-based providers, which are registered once at startup from
+`appsettings.json` and choose their own `CallbackPath`.
+_Avoid_: "database provider," "DB-backed IdP" — and don't say "external provider" alone
+when the distinction from the file-based kind matters.
+
+**IdentityProviderStore** (IdentityServerHost):
+This sample's subclass of Duende's EF `IdentityProviderStore`, overriding only `MapIdp` to
+turn a row's `Type` column into a strongly-typed provider (`OpenIdConnectProvider`) instead
+of Duende's generic `OidcProvider`. The one custom store the real IdG has, and the only one
+this sample ports — `IClientStore`/`IResourceStore` are Duende's stock EF versions in both.
+_Avoid_: confusing with `ExternalUserStore` (provisioned federated *identities*) or
+`TestUserStore` (local passwords). This one stores *providers*, not users.
+
+**DynamicIdentityProviderEnabled**:
+The config flag gating whether database-backed providers can actually serve a login. Same
+name and placement as the real IdG's. Note what it does *not* gate: `IdentityProviderStore`
+is registered either way. Off means the store exists and the rows exist but nothing reads
+them — so a vanished login button has two indistinguishable causes (this flag, or the row's
+own `Enabled` column).
+
+**initech**:
+The third tenant, added in Phase 9. Has no local test user and no `ExternalProviders`
+entry — its only way in is a database-backed provider, which makes it the control case
+proving a row alone can produce a working federated login. `acme` (file-based providers)
+and `globex` (none) keep their Phase 4 behavior untouched.
+_Avoid_: treating it as evidence that tenant onboarding is codeless — `Tenants.DisplayNames`
+is still a hardcoded dictionary, and `ExternalServicesStub` needed its own matching entry.
 
 **Service account**:
 A client-credentials-grant client (e.g. `mvcclient-svc.acme`), one per tenant, for

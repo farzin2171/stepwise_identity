@@ -55,19 +55,23 @@ var identityResourceKeys = document.IdentityResources.Select(r => r.Key).ToHashS
 var apiScopeKeys = document.ApiScopes.Select(s => s.Name).ToHashSet();
 var apiResourceKeys = document.ApiResources.Select(r => r.Name).ToHashSet();
 var clientKeys = document.Clients.Select(c => c.ClientId).ToHashSet();
+var identityProviderKeys = document.IdentityProviders.Select(p => p.Scheme).ToHashSet();
 
 var identityResourcesUpdated = await db.IdentityResources.Where(r => identityResourceKeys.Contains(r.Name)).ExecuteDeleteAsync();
 var apiScopesUpdated = await db.ApiScopes.Where(s => apiScopeKeys.Contains(s.Name)).ExecuteDeleteAsync();
 var apiResourcesUpdated = await db.ApiResources.Where(r => apiResourceKeys.Contains(r.Name)).ExecuteDeleteAsync();
 var clientsUpdated = await db.Clients.Where(c => clientKeys.Contains(c.ClientId)).ExecuteDeleteAsync();
+var identityProvidersUpdated = await db.IdentityProviders.Where(p => identityProviderKeys.Contains(p.Scheme)).ExecuteDeleteAsync();
 
 db.IdentityResources.AddRange(document.IdentityResources.Select(dto => dto.ToModel().ToEntity()));
 db.ApiScopes.AddRange(document.ApiScopes.Select(dto => dto.ToModel().ToEntity()));
 db.ApiResources.AddRange(document.ApiResources.Select(dto => dto.ToModel().ToEntity()));
 db.Clients.AddRange(document.Clients.Select(dto => dto.ToModel().ToEntity()));
+db.IdentityProviders.AddRange(document.IdentityProviders.Select(dto => dto.ToModel().ToEntity()));
 await db.SaveChangesAsync();
 
 Console.WriteLine($"IdentityResources: {document.IdentityResources.Count - identityResourcesUpdated} added, {identityResourcesUpdated} updated");
 Console.WriteLine($"ApiScopes:         {document.ApiScopes.Count - apiScopesUpdated} added, {apiScopesUpdated} updated");
 Console.WriteLine($"ApiResources:      {document.ApiResources.Count - apiResourcesUpdated} added, {apiResourcesUpdated} updated");
 Console.WriteLine($"Clients:           {document.Clients.Count - clientsUpdated} added, {clientsUpdated} updated");
+Console.WriteLine($"IdentityProviders: {document.IdentityProviders.Count - identityProvidersUpdated} added, {identityProvidersUpdated} updated");

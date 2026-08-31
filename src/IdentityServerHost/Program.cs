@@ -1,8 +1,10 @@
 using IdentityServerHost;
 using IdentityServerHost.Configurations.Authentication;
 using IdentityServerHost.Configurations.Authentication.Helpers;
+using IdentityServerHost.Configurations.Extensions;
 using IdentityServerHost.Data;
 using IdentityServerHost.ExternalServices;
+using IdentityServerHost.IdentityServer.EntityFramework.Stores;
 using IdentityServerHost.KeyManagement;
 using IdentityServerHost.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -34,7 +36,11 @@ builder.Services.AddScoped<ExternalUserStore>();
 // docs/external-providers-configuration.md. IdG counterpart: the same section, loaded the same way, in
 // externalproviderssettings.json.
 builder.Services.Configure<ExternalProvidersOptions>(builder.Configuration.GetSection("ExternalProviders"));
-builder.Services.AddSingleton<IAuthenticationHelper, AuthenticationHelper>();
+// Phase 9: scoped, not singleton. This used to be AddSingleton<>() and had to change the moment
+// AuthenticationHelper took a dependency on IIdentityProviderStore — Duende registers that store scoped
+// (it wraps a DbContext), and a singleton holding a scoped dependency is a captive dependency the
+// container refuses outright at startup. See the README's Phase 9 "things that broke."
+builder.Services.AddScoped<IAuthenticationHelper, AuthenticationHelper>();
 
 // Phase 7: bind target for "ExternalServicesApi" — see appsettings.Development.json and
 // ExternalServices/ExternalServicesOptions.cs.
@@ -62,7 +68,7 @@ builder.Services.AddHttpClient<UserClient>()
        .AddPolicyHandler(RetryPolicy())
        .AddPolicyHandler(CircuitBreakerPolicy());
 
-builder.Services.AddIdentityServer(options =>
+var identityServerBuilder = builder.Services.AddIdentityServer(options =>
        {
            options.KeyManagement.Enabled = false;
 
@@ -75,10 +81,9 @@ builder.Services.AddIdentityServer(options =>
            options.Authentication.CheckSessionCookieSameSiteMode = SameSiteMode.Lax;
        })
        // Phase 5: Duende's own stock EF stores, SQL Server-backed — the same types the real IdG uses,
-       // no custom IClientStore/IResourceStore (it doesn't have those either; only a custom
-       // IdentityProviderStore, not yet ported here). Phase 6: rows come from
+       // no custom IClientStore/IResourceStore (it doesn't have those either). Phase 6: rows come from
        // ../../Tools/ConfigIngestionTool now, not a seed step in this app — Duende just reads whatever
-       // is in the database.
+       // is in the database. Phase 9 adds the one custom store the real IdG does have, just below.
        .AddConfigurationStore(options =>
        {
            options.ConfigureDbContext = b =>
@@ -102,7 +107,21 @@ builder.Services.AddIdentityServer(options =>
        // Overrides the default profile service AddTestUsers() just registered — that one only knows how
        // to answer "is this user active?" for subjects it finds in TestUsers.Users, which rejects the
        // externally-provisioned principal ExternalController.cs signs in. See SampleProfileService.cs.
-       .AddProfileService<SampleProfileService>();
+       .AddProfileService<SampleProfileService>()
+       // Phase 9: replaces Duende's stock EF IdentityProviderStore with the subclass that maps a row's
+       // Type column onto a strongly-typed provider — see
+       // IdentityServer/EntityFramework/Stores/IdentityProviderStore.cs. Registered unconditionally,
+       // exactly as the real IdG does; it's the *handling* of those providers that's flag-gated below.
+       .AddIdentityProviderStore<IdentityProviderStore>();
+
+// Phase 9: the flag gates whether database-backed schemes can actually serve a login, not merely whether
+// they're listed. Same name and same placement as the real IdG's Startup.cs. Off is the safe default for
+// anyone who hasn't ingested any IdentityProviders rows: the store is registered but nothing reads it,
+// and Phases 1-8 behave exactly as before.
+if (builder.Configuration.GetValue<bool>("DynamicIdentityProviderEnabled"))
+{
+    identityServerBuilder.AddDynamicIdentityProviders();
+}
 
 // IdentityServer's own cookies (idsrv, idsrv.external) default to SameSite=None without Secure —
 // logged as a framework warning, and silently DROPPED outright by a real browser (not just warned

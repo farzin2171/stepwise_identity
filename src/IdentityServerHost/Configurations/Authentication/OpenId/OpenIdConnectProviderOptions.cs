@@ -8,7 +8,7 @@ namespace IdentityServerHost.Configurations.Authentication.OpenId;
 // extra protocol-specific behavior this plain type doesn't have — see
 // docs/external-providers-configuration.md for what that extra behavior is and why it's out of scope for
 // this sample's first step.
-public class OpenIdConnectProviderOptions : BaseAuthenticationOptions
+public class OpenIdConnectProviderOptions : BaseAuthenticationOptions, IOpenIdConnectConfigurationOptions
 {
     // The OIDC issuer to trust — this app fetches {Authority}/.well-known/openid-configuration once and
     // caches it. For a real Entra ID tenant this looks like

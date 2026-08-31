@@ -12,7 +12,18 @@ public static class Tenants
     public static IReadOnlyDictionary<string, string> DisplayNames => new Dictionary<string, string>
     {
         ["acme"] = "Acme Corp",
-        ["globex"] = "Globex Corporation"
+        ["globex"] = "Globex Corporation",
+        // Phase 9. Initech has no local test user and no entry under "ExternalProviders" in
+        // appsettings.json — its only way in is a database-backed identity provider row. That makes it the
+        // control case for this phase: if Initech's login page offers an external option, it can only have
+        // come from the IdentityProviders table.
+        //
+        // Be precise about what this does and doesn't demonstrate. Onboarding Initech still needed this
+        // line, because tenant display names are a hardcoded dictionary here (Phase 3's design). What
+        // moved into the database is the *provider* configuration, not the tenant. The real IdG resolves
+        // tenants through a service call instead — see TenantClient (Phase 7) for the piece this sample
+        // does port.
+        ["initech"] = "Initech"
     };
 
     // Which external providers show up on which tenant's login page used to be a hardcoded dictionary

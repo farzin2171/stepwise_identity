@@ -30,7 +30,13 @@ app.UseAuthorization();
 var tenantsByKey = new Dictionary<string, string>
 {
     ["acme"] = "8f14e45f-ceea-467e-bd42-05d1a4a6b3f0",
-    ["globex"] = "c9f0f895-fb98-4d75-8d81-7d7c7f4a6b1e"
+    ["globex"] = "c9f0f895-fb98-4d75-8d81-7d7c7f4a6b1e",
+    // Phase 9. Initech had to be added HERE as well as in IdentityServerHost's Tenants.cs, and the fact
+    // that it's two edits in two processes is the point the comment above is making: these registries
+    // agree by convention, not by sharing a table. Miss this one and the login itself succeeds — the
+    // failure surfaces later and elsewhere, as a 404 out of TenantClient during token issuance, which
+    // reads like a broken external service rather than a missing row.
+    ["initech"] = "a3f5b2c1-9d84-4e17-b6a0-2c8e5f1d7b93"
 };
 
 app.MapGet("/api/v1/tenants/GetByKey/{key}", (string key) =>

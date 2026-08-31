@@ -20,13 +20,13 @@ public class AccountController(
     IAuthenticationHelper authenticationHelper) : Controller
 {
     [HttpGet]
-    public IActionResult Login(string returnUrl) => View(new LoginViewModel
+    public async Task<IActionResult> Login(string returnUrl) => View(new LoginViewModel
     {
         ReturnUrl = returnUrl,
         TenantDisplayName = tenantContext.DisplayName,
         // No tenant resolved at all -> no external options shown, same fail-closed default the real IdG's
         // IsTenantParameterRequired uses when a client needs a tenant and none was supplied.
-        ExternalProviders = authenticationHelper.GetAllAvailableIdentityProviders(tenantContext.TenantKey)
+        ExternalProviders = await authenticationHelper.GetAllAvailableIdentityProvidersAsync(tenantContext.TenantKey)
     });
 
     [HttpPost]
@@ -52,7 +52,7 @@ public class AccountController(
                 {
                     ReturnUrl = model.ReturnUrl,
                     TenantDisplayName = tenantContext.DisplayName,
-                    ExternalProviders = authenticationHelper.GetAllAvailableIdentityProviders(tenantContext.TenantKey)
+                    ExternalProviders = await authenticationHelper.GetAllAvailableIdentityProvidersAsync(tenantContext.TenantKey)
                 });
             }
 
@@ -80,7 +80,7 @@ public class AccountController(
         {
             ReturnUrl = model.ReturnUrl,
             TenantDisplayName = tenantContext.DisplayName,
-            ExternalProviders = authenticationHelper.GetAllAvailableIdentityProviders(tenantContext.TenantKey)
+            ExternalProviders = await authenticationHelper.GetAllAvailableIdentityProvidersAsync(tenantContext.TenantKey)
         });
     }
 

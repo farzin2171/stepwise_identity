@@ -14,7 +14,8 @@ actually is under all its production scaffolding.
 6. Data ingestion / config tooling ✓
 7. DIT external-service calls (TenantClient, UserClient) ✓
 8. Signing-key management (Key Vault instead of a developer credential) ✓
-9. IdentityProviderStore (DB-persisted external-provider config) ← next
+9. IdentityProviderStore (DB-persisted external-provider config) ✓
+10. Mini.Infrastructure (extract the duplicated tenant/identity/token plumbing) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -720,9 +721,10 @@ for the exact steps.
 
 ### What's deliberately still missing
 
-- **No custom `IdentityProviderStore`.** `ExternalProviders` is still
-  `appsettings.json`-only — the real IdG persists this in SQL too. Planned for a future
-  phase (see the roadmap).
+- ~~**No custom `IdentityProviderStore`.**~~ Resolved in Phase 9 — external providers can
+  now come from the `IdentityProviders` table as well as `appsettings.json`, through the
+  same `IAuthenticationOptions` interface. `appsettings.json` still wins a scheme-name
+  collision, on purpose.
 - ~~**`AddDeveloperSigningCredential()` is still a throwaway key on disk.**~~ Resolved
   in Phase 8 — `KeyManagement:Provider: "AzureKeyVault"` swaps in a real Key Vault-backed
   key. Still the default here, on purpose.
@@ -1052,6 +1054,211 @@ config isn't something any other `test-phaseN.ps1` does either.
   — it has none either, relying on the Azure SDK's own built-in retry behavior (visible
   in the "four retries" trace above).
 
+## Phase 9 — `IdentityProviderStore` (external providers from the database)
+
+Phase 4 made external providers config-driven, and every phase since has said the same
+thing in its "deliberately missing" list: `ExternalProviders` is still
+`appsettings.json`-only. `Program.cs` said it too, in a comment on the store registration
+— *"no custom `IClientStore`/`IResourceStore` (it doesn't have those either; only a custom
+`IdentityProviderStore`, not yet ported here)."* This phase ports exactly that one thing.
+
+The problem it solves is onboarding. Adding a tenant's SSO today means editing
+`appsettings.json` and restarting the process. That's fine for `acme`, whose provider was
+known when the app was written; it's not fine for a carrier who signs a contract on a
+Tuesday. Duende calls the alternative **dynamic providers**: schemes that don't exist at
+startup, resolved from storage on the request that needs them.
+
+### The seam that makes it work
+
+The whole port hinges on one interface this sample already had. `IAuthenticationOptions`
+(Phase 4) is implemented by `BaseAuthenticationOptions` — the POCO the options binder
+fills from `appsettings.json`. Phase 9 adds a second implementer:
+
+```csharp
+public abstract record BaseIdentityProvider : IdentityProvider, IAuthenticationOptions
+{
+    string IAuthenticationOptions.Name => Scheme;
+    string IAuthenticationOptions.DisplayName => DisplayName ?? Scheme;
+
+    public string EcosystemTenant => this["EcosystemTenant"] ?? string.Empty;
+    // FederatedConfiguration, ClaimMappings — same, read out of the Properties bag
+}
+```
+
+`IdentityProvider` is Duende's database row: `Scheme`, `DisplayName`, `Type`, `Enabled`,
+and a free-form string-to-string `Properties` bag reached through `this["Key"]`. The
+strongly-typed properties are just readers over that bag. So `AccountController` and
+`AuthenticationHelper` keep working against `IAuthenticationOptions` and never learn which
+source a given provider came from.
+
+The cost of the bag is worth stating plainly: a typo in a property name yields `null`, not
+an error. `"Authorty"` instead of `"Authority"` produces a provider that fails at redirect
+time with a message about an empty authority. The real IdG lives with this too.
+
+### The custom store is four lines that matter
+
+```csharp
+public class IdentityProviderStore(...)
+    : Duende.IdentityServer.EntityFramework.Stores.IdentityProviderStore(...)
+{
+    protected override IdentityProvider MapIdp(Entities.IdentityProvider idp) => idp.Type switch
+    {
+        IdentityProviderTypes.OpenIdConnect => new OpenIdConnectProvider(idp.ToModel()),
+        _ => throw new Exception($"...The type '{idp.Type}' is not supported")
+    };
+}
+```
+
+Note what it doesn't do: no querying, no caching, no enabled/disabled handling. All of
+that is Duende's. Overriding the *mapper* rather than reimplementing the store is the
+smallest hook that turns a row into a type the application understands. Duende's own base
+returns a generic `OidcProvider`, which would silently discard `EcosystemTenant` and every
+other custom property.
+
+Registration mirrors the real IdG exactly, including the split:
+
+```csharp
+    .AddIdentityProviderStore<IdentityProviderStore>();   // always
+
+if (builder.Configuration.GetValue<bool>("DynamicIdentityProviderEnabled"))
+{
+    identityServerBuilder.AddDynamicIdentityProviders();  // flag-gated
+}
+```
+
+### Comparison against the real IdG
+
+| | Real IdG | This sample |
+| --- | --- | --- |
+| Store | `IdentityServer/EntityFramework/Stores/IdentityProviderStore.cs` | Same class, same override, same error message |
+| Base model | `IdentityServer/Models/BaseIdentityProvider.cs`, a `class` | A `record` — see the gotcha below |
+| Provider types | 5: `openidconnect`, `azureadb2c`, `azuread`, `saml`, `guest` | 1: `openidconnect` |
+| Type registration | `AdditionalExtensions.AddDynamicIdentityProviders()` | `Configurations/Extensions/DynamicIdentityProviderExtensions.cs`, same shape |
+| Feature flag | `DynamicIdentityProviderEnabled` in `Startup.cs` | Same name, same placement |
+| JSON in the bag | Newtonsoft | `System.Text.Json` — one fewer dependency |
+| Which providers a tenant sees | Client's `IdentityProviderRestrictions` **plus** a client property named after the tenant holding an ordered, comma-separated scheme list | The provider's own `EcosystemTenant`, same as Phase 4's file-based path |
+| Ingestion | `config/identityProviders.json` via the DataIngestionTool | An `identityProviders` array in `IdentityServerConfig.json` via `ConfigIngestionTool` |
+
+### Where this sample simplifies
+
+- **Tenant filtering is a different design, not a smaller one.** The real IdG never asks
+  a provider which tenant it belongs to when building the login page; it asks the
+  *client* which schemes this tenant may use, and gets ordering for free from the
+  comma-separated list. This sample filters on the provider's own `EcosystemTenant`,
+  which is Phase 4's model extended to a second source. The real approach also lets two
+  tenants share one provider — this one can't.
+- **Filtering by tenant costs one read per enabled scheme.** `GetAllSchemeNamesAsync`
+  returns names and enabled flags only; `EcosystemTenant` lives in the `Properties` bag,
+  so finding it means loading each provider. That's fine for one row and wrong for a
+  hundred. The real IdG's client-property approach avoids it entirely — another reason
+  its design isn't merely a fancier version of this one.
+- **Config wins a scheme-name collision, and says so.** A database row with the same
+  scheme as a configured provider is skipped with a warning. The real IdG gets the same
+  precedence structurally, by checking each config list before falling back to the store.
+- **Only `openidconnect`.** `saml` and `guest` need their own authentication handlers;
+  `azuread`/`azureadb2c` need protocol-specific behavior this sample doesn't have. See
+  `Models/Constants/IdentityProviderTypes.cs`.
+
+### The Initech tenant, and what it does and doesn't prove
+
+The new provider belongs to a third tenant, `initech`, which has no local test user and
+no `ExternalProviders` entry. If its login page offers an external option, that option can
+only have come from the `IdentityProviders` table. `acme` (file-based) and `globex` (none)
+are untouched, which is why `test-phase4.ps1` still passes unmodified.
+
+Be honest about the limit: onboarding Initech still required a code change, because
+`Tenants.DisplayNames` is a hardcoded dictionary (Phase 3's design). What moved into the
+database is the *provider* configuration, not the tenant.
+
+### Things that broke, and why they're worth knowing
+
+1. **`IdentityProvider` is a `record` in Duende 8** — `CS8865: Only records may inherit
+   from records`. The real IdG declares `BaseIdentityProvider` as a `class` because it
+   runs an older Duende. Nothing in this sample depends on the difference, but records
+   bring value equality: two providers built from the same row now compare equal where
+   the real IdG's would not.
+
+2. **The base store's constructor changed.** Duende 8 takes
+   `(IConfigurationDbContext, ILogger<...>, IIdentityProviderFactory)`, not the real IdG's
+   `ICancellationTokenProvider`. `MapIdp` survives as the extension point, so the port
+   still works — but a line-for-line copy doesn't compile, which is exactly why the phase
+   conventions say to verify the counterpart's shape rather than trust a copy.
+
+3. **`AddSingleton<IAuthenticationHelper>` became a startup crash.** `AuthenticationHelper`
+   took a dependency on `IIdentityProviderStore`, which Duende registers *scoped* because
+   it wraps a `DbContext`. A singleton holding a scoped dependency is a captive dependency
+   and the container refuses it outright. Fixed by making the helper scoped — the right
+   answer, but note the direction of the surprise: adding a read to an existing class
+   changed that class's required lifetime.
+
+4. **The interface had to become async, and it rippled.**
+   `GetAllAvailableIdentityProviders` became `GetAllAvailableIdentityProvidersAsync`,
+   which forced three `AccountController` call sites and turned a synchronous
+   `Login(string)` action into an async one. A synchronous interface is a bet that no
+   future implementation will need I/O; this phase collected on that bet. Duende 8 also
+   makes `CancellationToken` *required* on both store methods, so it threads all the way
+   up.
+
+5. **A renamed scheme left a stale row behind, and it nearly broke Phase 4.** The scheme
+   was initially `globex-external-idp`; renaming it to `initech-external-idp` and
+   re-ingesting produced **two** rows, because `ConfigIngestionTool` only replaces keys
+   present in the file and never deletes ones that aren't — a simplification its own
+   comments already warned about. The stale row silently gave Globex an external login
+   option and would have failed `test-phase4.ps1`'s first assertion. Verify with:
+
+   ```
+   sqlcmd -S "(localdb)\mssqllocaldb" -d MiniIdG -Q "SELECT Scheme, Type, Enabled FROM IdentityProviders;"
+   ```
+
+   This is the strongest argument yet for the "full sync" behavior the ingestion tool
+   doesn't have.
+
+6. **Adding a tenant meant editing two processes.** `Tenants.cs` (IdentityServerHost) and
+   the `tenantsByKey` dictionary in `ExternalServicesStub`. Miss the second and the login
+   *succeeds* — the failure surfaces later, as a 404 out of `TenantClient` during token
+   issuance, which reads like a broken external service rather than a missing row. That's
+   the cost of two registries agreeing by convention instead of sharing a table, and it's
+   exactly what the stub's own comment predicts.
+
+7. **The dynamic callback URL is not yours to choose.** A file-based provider uses whatever
+   `CallbackPath` you configure. A dynamic one is served at `/federation/{scheme}/signin`,
+   derived from the scheme name — so renaming a scheme in the database silently changes the
+   redirect URI the external IdP must have registered. `ExternalIdp` needed a second client
+   (`mini-idg-host-initech`) with exactly that URI.
+
+### Verifying it
+
+[`test-phase9.ps1`](../../test-phase9.ps1) proves the row becomes a login button, that
+`acme` and `globex` are unaffected, that a full federated login completes through
+`/federation/initech-external-idp/`, and that the resulting token carries `name` from
+ExternalIdp and `tenant_id=initech` from the original request.
+
+Run `ExternalIdp` (5011), `IdentityServerHost` (5001), `ExternalServicesStub` (5012) and
+`SampleApi` (5007), and run `ConfigIngestionTool` once so the row exists.
+
+### What's deliberately still missing
+
+- **No management API for providers.** Rows arrive only through `ConfigIngestionTool`.
+  The real system has admin endpoints; CRUD teaches nothing this sample doesn't show.
+- **No caching.** Duende ships `CachingIdentityProviderStore`; every login page render
+  here re-reads the table. Deliberate — Phase 7 already has one cache with a
+  deliberately-planted bug, and a second one would muddy that lesson.
+- **Secrets in plaintext in the `Properties` bag.** `ClientSecret` sits unencrypted in the
+  ingestion file and the database — and so does the real `config/identityProviders.json`.
+  Reproduced honestly rather than quietly improved, because it's a real property of the
+  system this course is teaching.
+- **`FederatedConfiguration` and `ClaimMappings` are still modeled but unconsumed** — now
+  from two sources instead of one.
+
+### Try it yourself
+
+Set `"DynamicIdentityProviderEnabled": false` in `appsettings.Development.json` and restart.
+Initech's login page loses its button — the store is still registered and the row is still
+there, but nothing reads it. Then set it back to `true` and, instead, flip the row's
+`Enabled` column to `0` directly in SQL. Same visible result, no restart needed. Two very
+different mechanisms, one indistinguishable outcome — which is which when you're debugging
+a carrier reporting "our SSO button vanished"?
+
 ## Running it
 
 0. **Prerequisites.**
@@ -1179,6 +1386,14 @@ config isn't something any other `test-phaseN.ps1` does either.
 
 ## What's deliberately missing (and why)
 
+- **The same plumbing exists three times over.** `TenantContext`,
+  `TenantResolutionMiddleware` and `Tenants` live independently in both
+  `IdentityServerHost` and `MvcClient/Infrastructure/`, and `SampleApi`'s
+  `IIdentityContext` is a third variation on the same idea. Each was written for its own
+  phase and none knows about the others. Phase 10 extracts them into
+  `Mini.Infrastructure` — and the extraction is itself the test of a claim `CONTEXT.md`
+  currently makes by assertion: that the two `TenantContext`s are genuinely different
+  concepts rather than one abstraction with two resolvers.
 - **Real business data or logic behind the API.** SampleApi has exactly one endpoint
   that echoes claims — it exists to prove token validation works, not to be a real
   service. Also see its own README for its list of "deliberately missing."

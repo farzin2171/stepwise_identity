@@ -20,7 +20,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 6. Data ingestion / config tooling ✓
 7. DIT external-service calls (TenantClient, UserClient) ✓
 8. Signing-key management (Key Vault instead of a developer credential) ✓
-9. IdentityProviderStore (DB-persisted external-provider config) ← next
+9. IdentityProviderStore (DB-persisted external-provider config) ✓
+10. Mini.Infrastructure (extract the duplicated tenant/identity/token plumbing) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -64,6 +65,18 @@ IdentityServerHost's signing key is config-driven too, as of Phase 8 — swap
   certificates-vs-secrets gotcha) the app actually needs, authenticating with either
   your own `az login` session or a service principal, and verifying and rotating a real
   key end to end.
+
+As of Phase 9, external providers no longer have to come from `appsettings.json` at all —
+IdentityServerHost ports the real IdG's custom `IdentityProviderStore`, so a provider can
+be a row in the `IdentityProviders` table resolved at request time (Duende calls these
+*dynamic providers*), reaching the same `IAuthenticationOptions` interface the file-based
+ones already implement:
+[src/IdentityServerHost/IdentityServer](src/IdentityServerHost/IdentityServer) — the store
+and its provider models, with the `Phase 9` section of
+[IdentityServerHost's README](src/IdentityServerHost/README.md) covering why tenant
+filtering here is a *different design* from the real IdG's rather than a smaller one, and
+seven things that broke on the way (including a captive-dependency crash and a stale
+database row that nearly broke Phase 4's test).
 
 MvcClient also now carries a port of `Applications.Apply`'s (the real production MVC
 BFF) multi-tenancy infrastructure and its `IdentityGatewayApi`/`ExternalServicesApi`
@@ -120,8 +133,13 @@ Verification scripts (repo root):
   proving the `AzureKeyVault` provider is really wired up (see
   [src/IdentityServerHost/docs/azure-key-vault-setup.md](src/IdentityServerHost/docs/azure-key-vault-setup.md)
   for using a real vault).
+- [`test-phase9.ps1`](test-phase9.ps1) — proves an external provider that exists *only*
+  as a database row becomes a login button for its tenant (`initech`) and can complete a
+  real federated login through Duende's dynamic-provider path
+  (`/federation/{scheme}/signin`), while `acme` (file-based) and `globex` (none) are
+  unaffected.
 
-None of the twelve drive real browser JavaScript — see
+None of the thirteen drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 
