@@ -2,8 +2,8 @@
 
 A from-scratch teaching port of `Applications.IdentityGateway`, built one phase at a
 time — this file is the glossary for this sample's *own* invented vocabulary. Standard
-OIDC/Duende terms (client, scope, resource, grant type, subject) are documented well
-enough elsewhere and are deliberately not repeated here.
+OAuth/OIDC terms (client, scope, resource, grant type, subject) are covered in
+[`docs/reference/`](docs/reference/README.md) and are deliberately not repeated here.
 
 ## Language
 

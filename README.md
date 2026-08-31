@@ -1,6 +1,11 @@
 # stepwise_identity
 this is a repo to explain how identity works in our microservices environment
 
+New to OAuth 2.0 / OpenID Connect itself, independent of anything in this repo? Start
+with [`docs/reference/`](docs/reference/README.md) — a vendor-neutral reference on the
+protocol concepts, cross-linked into the phase-by-phase code below wherever they show
+up.
+
 ## Mini IdG
 
 A mini Identity Gateway, built from scratch in phases that mirror
