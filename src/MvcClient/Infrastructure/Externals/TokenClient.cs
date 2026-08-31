@@ -11,9 +11,10 @@ namespace MvcClient.Infrastructure.Externals;
 //
 // The real client_id sent to /connect/token is "{serviceAccount.ClientId}.{tenantKey}" — e.g.
 // "mvcclient-svc.acme" — with a PER-TENANT secret looked up from TenantSecrets. This is why
-// IdentityServerHost/Config.cs registers two client-credentials clients instead of one: a real deployment
-// gives every tenant its own client-credentials client and secret, so revoking or rotating one tenant's
-// service-account access never touches another tenant's.
+// IdentityServerHost/Configurations/IdentityServerConfig.json (Phase 6) registers two
+// client-credentials clients instead of one: a real deployment gives every tenant its own
+// client-credentials client and secret, so revoking or rotating one tenant's service-account access
+// never touches another tenant's.
 //
 // Simplified from the real ServiceAccountTokenRepository: that one caches in IDistributedCache and
 // re-validates freshness by decoding the cached JWT's own "exp" claim on every read. This uses IMemoryCache

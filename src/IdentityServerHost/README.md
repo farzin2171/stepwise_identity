@@ -12,8 +12,8 @@ actually is under all its production scaffolding.
 4. External identity providers ✓
 5. Persistence (SQL Server instead of in-memory) ✓
 6. Data ingestion / config tooling ✓
-7. DIT external-service calls (TenantClient, UserClient) ← next
-8. Signing-key management (Key Vault instead of a developer credential)
+7. DIT external-service calls (TenantClient, UserClient) ✓
+8. Signing-key management (Key Vault instead of a developer credential) ← next
 9. IdentityProviderStore (DB-persisted external-provider config)
 ```
 
@@ -437,12 +437,13 @@ is the concrete version of the real system's mismatch check; the real one runs l
 (after signing in, at the point IdentityServer is about to issue a token) and has an
 escape hatch (`LinkedTenants`) this sample doesn't implement.
 
-> **Known real-system caveat, worth carrying forward:** the actual tenant GUID lookup
-> (`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration =
+> **Known real-system caveat, carried forward and reproduced in Phase 7:** the actual
+> tenant GUID lookup (`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration =
 > DateTimeOffset.MaxValue` — it never expires. A tenant's GUID changing in the source of
-> truth would not be picked up without an app restart. `Tenants.cs` here is a
-> hard-coded dictionary with no cache at all, so the bug can't reproduce in this sample
-> — mentioned so the absence doesn't read as "this sample proves it's fine."
+> truth would not be picked up without an app restart. `Tenants.cs` here is still a
+> hard-coded dictionary with no cache of its own — it resolves *which* tenant, not the
+> tenant's GUID — but Phase 7's `TenantClient`/`SampleProfileService` now reproduce this
+> exact bug for the GUID lookup itself. See Phase 7's section below.
 
 ### `Config.cs` — an opt-in `tenant` scope
 
@@ -839,6 +840,119 @@ client actually works — not just that the column looks right.
   overlays, per-tenant files, whatever it actually was) is unknown — lost with the
   deleted tool.
 
+## Phase 7 — DIT external-service calls
+
+Phase 3's `Tenants.cs` has always been a hardcoded dictionary standing in for something
+the real IdG actually does over HTTP: it calls a sibling DIT microservice to resolve a
+tenant key to a real database GUID. The real system's own docs already named this exact
+gap (`IdentityServerHost/README.md`'s Phase 3 section: *"the actual tenant GUID lookup
+(`TenantClient.GetTenantAsync`) is cached with `AbsoluteExpiration = DateTimeOffset.MaxValue`
+— it never expires... `Tenants.cs` here is a hard-coded dictionary with no cache at all,
+so the bug can't reproduce in this sample"*). Phase 7 ports the client, and — on
+purpose — the bug.
+
+### `../ExternalServicesStub` — a stand-in for two real DIT microservices
+
+The real `TenantClient`/`UserClient` call a Tenant Management API and a User API —
+independent DIT microservices this course doesn't have. `../ExternalServicesStub`
+collapses both into one small process for the sake of this course, exposing the same two
+routes the real clients actually call: `GET /v1/tenants/GetByKey/{key}` and
+`GET /v2/User/identities/role/{subjectId}`, each backed by a hardcoded dictionary.
+
+### `ExternalServices/TenantClient.cs` / `UserClient.cs` — self-issued JWTs, no secret
+
+```csharp
+var jwt = await tools.IssueClientJwtAsync(
+    tenantOptions.JwtAuthentication.ClientId,
+    lifetime: 300,
+    ct,
+    audiences: [tenantOptions.JwtAuthentication.Audience]);
+
+var request = new HttpRequestMessage(HttpMethod.Get, $"{tenantOptions.Address}/v1/tenants/GetByKey/{tenantKey}");
+request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", jwt);
+```
+
+Every other client-to-IdentityServerHost call in this sample goes through
+`/connect/token` with a registered `Client` and a secret. This one is different in kind:
+`Duende.IdentityServer.IIdentityServerTools.IssueClientJwtAsync` mints a JWT **signed
+with IdentityServerHost's own key** directly, with no OAuth round trip and no registered
+client at all — `IdentityServerHost/Configurations/IdentityServerConfig.json` has no
+entry for `"identityserverhost"` (the `ClientId` in the JWT's `client_id` claim) because
+none is needed. `ExternalServicesStub` trusts the token for the same reason SampleApi
+trusts every other access token in this sample: it's signed by, and validated against,
+the same IdentityServerHost.
+
+**Where this matches the real IdG:** this is the *exact* pattern the real `TenantClient`/
+`UserClient` use — `IIdentityServerTools.IssueClientJwtAsync`, no secret, IdentityServer
+acting as its own OAuth client against its sibling services.
+
+### `SampleProfileService.cs` — one integration point instead of a custom `ITokenResponseGenerator`
+
+The real IdG calls both clients from a custom `EquisoftTokenResponseGenerator`
+(`ITokenResponseGenerator` override) at token-issuance time. This sample already had a
+component that assembles claims at token-issuance time — `SampleProfileService`, built
+in Phase 4 — so that's where both calls went instead of adding a second, parallel
+component for the same job:
+
+```csharp
+var tenantKey = enrichedClaims.FirstOrDefault(c => c.Type == "tenant_id")?.Value;
+if (tenantKey is not null)
+{
+    enrichedClaims.Add(new Claim("tenant_guid", await GetCachedTenantGuidAsync(tenantKey, ct)));
+}
+
+enrichedClaims.Add(new Claim("role", await userClient.GetRoleAsync(subjectId, ct)));
+```
+
+**Where this sample simplifies — additive, not a replacement:** the real IdG's
+`tenant_id` claim *is* this GUID. This sample keeps its existing `tenant_id` claim as the
+friendly key it's always been since Phase 3 and adds `tenant_guid` alongside it, rather
+than changing what `tenant_id` contains — MvcClient's `ITenantContext` and SampleApi's
+`IIdentityContext` both already resolve tenant *from* that key (see `CONTEXT.md`'s
+`TenantClient`/`UserClient` entry), and changing its shape would ripple into both for a
+phase that's only about proving this HTTP-call pattern out.
+
+### The never-expiring cache bug — reproduced on purpose
+
+```csharp
+await cache.SetStringAsync(cacheKey, tenantGuid, new DistributedCacheEntryOptions
+{
+    AbsoluteExpiration = DateTimeOffset.MaxValue
+}, ct);
+```
+
+`GetCachedTenantGuidAsync` wraps `TenantClient.GetTenantAsync` in an `IDistributedCache`
+lookup (in-memory here; Redis in the real system — same interface, same bug either way,
+since the bug is in the cache-entry *options*, not the backing store) keyed on
+`tenant_id_from_key_{tenantKey}`, with the exact same never-expiring
+`AbsoluteExpiration` the real system's own `EquisoftTokenResponseGenerator` uses.
+Verified for real (not just asserted): changing `ExternalServicesStub`'s GUID for
+`acme` and restarting *only* that project — not IdentityServerHost — still returned the
+old, cached GUID on the next login. `UserClient.GetRoleAsync` has no cache at all
+around it — the deliberate contrast sitting right next to it in the same method.
+
+### Verification
+
+`pwsh ./test-phase7.ps1` logs in as two different users/tenants, confirms `tenant_guid`
+and `role` resolve correctly from `ExternalServicesStub` and reach both
+IdentityServerHost's own token and SampleApi's independently-validated copy of it. The
+cache bug itself isn't scripted — reproducing it needs editing `ExternalServicesStub`'s
+code, not just data — see the script's own "try it yourself" output for the exact steps
+(the same steps used to verify the claim above while writing this section).
+
+### What's deliberately still missing
+
+- **Only one of two real clients' full behavior.** The real `UserClient` short-circuits
+  to a fixed `"Guest"` role without calling out at all for guest users — this sample has
+  no guest concept, so every subject always calls out.
+- **No resilience testing.** The Polly retry/circuit-breaker policies (reused verbatim
+  from MvcClient's own) are wired up but never exercised by anything in this course —
+  `ExternalServicesStub` never fails on purpose.
+- **`Tenants.cs` (Phase 3) is unchanged.** It still resolves *which* tenant a login is
+  for from `acr_values`; `TenantClient` only resolves that tenant's *GUID*, a
+  downstream, additive step. The two were never the same concern, even though Phase 3's
+  README caveat could be read that way at a glance.
+
 ## Running it
 
 0. **Prerequisites.**
@@ -854,10 +968,10 @@ client actually works — not just that the column looks right.
      [`Configurations/IdentityServerConfig.json`](Configurations/IdentityServerConfig.json)
      changes.
 
-1. **Five terminals** — every project's `launchSettings.json` already pins its own port
+1. **Six terminals** — every project's `launchSettings.json` already pins its own port
    (`https://localhost:5001` for IdentityServerHost, `5011` ExternalIdp, `5006`
-   MvcClient, `5007` SampleApi, `5173` ReactSpa), so a plain `dotnet run` in each is
-   enough:
+   MvcClient, `5007` SampleApi, `5012` ExternalServicesStub, `5173` ReactSpa), so a plain
+   `dotnet run` in each is enough:
 
    ```bash
    # terminal 1
@@ -865,18 +979,22 @@ client actually works — not just that the column looks right.
    dotnet run
 
    # terminal 2
-   cd src/IdentityServerHost
+   cd src/ExternalServicesStub
    dotnet run
 
    # terminal 3
-   cd src/MvcClient
+   cd src/IdentityServerHost
    dotnet run
 
    # terminal 4
-   cd src/SampleApi
+   cd src/MvcClient
    dotnet run
 
    # terminal 5
+   cd src/SampleApi
+   dotnet run
+
+   # terminal 6
    cd src/ReactSpa
    npm install   # first time only
    npm run dev
@@ -938,9 +1056,11 @@ client actually works — not just that the column looks right.
    from step 6; [`test-phase5.ps1`](../../test-phase5.ps1) re-runs phases 2–4 against the
    now DB-backed server and queries LocalDB directly to confirm the seed/provisioning
    landed in SQL Server; [`test-phase6.ps1`](../../test-phase6.ps1) corrupts a client
-   directly in the database and confirms `ConfigIngestionTool` restores it. None of the
-   eight drive real browser JavaScript, so steps 2–4 above still need a manual pass at
-   least once (see `ReactSpa`'s README for why):
+   directly in the database and confirms `ConfigIngestionTool` restores it;
+   [`test-phase7.ps1`](../../test-phase7.ps1) confirms `tenant_guid`/`role` resolve from
+   `ExternalServicesStub` and reach both IdentityServerHost's and SampleApi's tokens.
+   None of the nine drive real browser JavaScript, so steps 2–4 above still need a
+   manual pass at least once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
@@ -951,6 +1071,7 @@ client actually works — not just that the column looks right.
    pwsh ./test-phase4.ps1
    pwsh ./test-phase5.ps1
    pwsh ./test-phase6.ps1
+   pwsh ./test-phase7.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -971,14 +1092,18 @@ client actually works — not just that the column looks right.
   same into ReactSpa (`oidc-client-ts`'s `signinRedirect({ acr_values: ... })`) is still
   open — see its README's "try it yourself" section.
 - ~~**Persistence.**~~ Resolved in Phase 5 — clients, resources, grants, and provisioned
-  external identities are all SQL Server-backed now. `Tenants.cs` and `TestUsers.cs`
-  (test-user credentials) are still hard-coded in-memory on purpose — the real IdG has no
-  local password login at all, and `Tenants.cs` is deliberately unported until Phase 7
-  (see the roadmap).
+  external identities are all SQL Server-backed now. `TestUsers.cs` (test-user
+  credentials) is still hard-coded in-memory on purpose — the real IdG has no local
+  password login at all.
 - ~~**Config baked into a compiled C# file.**~~ Resolved in Phase 6 — `Config.cs` is
   gone; `Configurations/IdentityServerConfig.json` plus
   `../Tools/ConfigIngestionTool` are the source of truth now, editable and re-ingested
   without a rebuild.
+- **`Tenants.cs` is still a hard-coded dictionary, deliberately.** Phase 7 ported the
+  *GUID-lookup* half of the real system's `TenantClient` (see its own section above),
+  not tenant resolution itself — `Tenants.ResolveTenantKey` (*which* tenant a login is
+  for, parsed from `acr_values`) is a different concern from `TenantClient.GetTenantAsync`
+  (*that* tenant's GUID), and only the second one is a real HTTP call in either system.
 - **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
   configurable external-id claim name, no duplicate-claim handling — Carol's `name`
   claim just works because ExternalIdp only ever sends one of it.

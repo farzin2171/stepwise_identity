@@ -2,9 +2,12 @@ using IdentityServerHost;
 using IdentityServerHost.Configurations.Authentication;
 using IdentityServerHost.Configurations.Authentication.Helpers;
 using IdentityServerHost.Data;
+using IdentityServerHost.ExternalServices;
 using IdentityServerHost.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
+using Polly;
+using Polly.Extensions.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -31,6 +34,32 @@ builder.Services.AddScoped<ExternalUserStore>();
 // externalproviderssettings.json.
 builder.Services.Configure<ExternalProvidersOptions>(builder.Configuration.GetSection("ExternalProviders"));
 builder.Services.AddSingleton<IAuthenticationHelper, AuthenticationHelper>();
+
+// Phase 7: bind target for "ExternalServicesApi" — see appsettings.Development.json and
+// ExternalServices/ExternalServicesOptions.cs.
+builder.Services.Configure<ExternalServicesOptions>(builder.Configuration.GetSection("ExternalServicesApi"));
+
+// Backs the tenant-GUID cache in SampleProfileService — an in-memory IDistributedCache instead of the
+// real system's Redis, same interface either way. See SampleProfileService.cs for why this is the
+// wrong place for that cache to live forever, on purpose.
+builder.Services.AddDistributedMemoryCache();
+
+// Same Polly retry + circuit-breaker shape MvcClient already established for its own external calls
+// (Program.cs there) — reused verbatim rather than reinvented.
+static IAsyncPolicy<HttpResponseMessage> RetryPolicy() =>
+    HttpPolicyExtensions.HandleTransientHttpError()
+        .WaitAndRetryAsync(2, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)));
+
+static IAsyncPolicy<HttpResponseMessage> CircuitBreakerPolicy() =>
+    HttpPolicyExtensions.HandleTransientHttpError()
+        .CircuitBreakerAsync(3, TimeSpan.FromSeconds(30));
+
+builder.Services.AddHttpClient<TenantClient>()
+       .AddPolicyHandler(RetryPolicy())
+       .AddPolicyHandler(CircuitBreakerPolicy());
+builder.Services.AddHttpClient<UserClient>()
+       .AddPolicyHandler(RetryPolicy())
+       .AddPolicyHandler(CircuitBreakerPolicy());
 
 builder.Services.AddIdentityServer(options =>
        {

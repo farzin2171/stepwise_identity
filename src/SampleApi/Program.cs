@@ -23,7 +23,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
            // everywhere — never disable this in real code.
            options.RequireHttpsMetadata = false;
 
-           // Must match the ApiResource name in IdentityServerHost/Config.cs — Duende stamps that name
+           // Must match the ApiResource name in IdentityServerHost/Configurations/IdentityServerConfig.json — Duende stamps that name
            // into the token's "aud" claim. A token issued for a different audience is rejected here
            // before this API's own code ever runs.
            options.TokenValidationParameters.ValidAudience = "api1";

@@ -5,7 +5,7 @@
     {
       "name": "tenant",
       "displayName": "Tenant",
-      "userClaims": [ "tenant_id" ]
+      "userClaims": [ "tenant_id", "tenant_guid", "role" ]
     }
   ],
 
@@ -18,7 +18,7 @@
       "name": "api1",
       "displayName": "Mini IdG Sample API",
       "scopes": [ "api1" ],
-      "userClaims": [ "name", "email", "tenant_id" ]
+      "userClaims": [ "name", "email", "tenant_id", "tenant_guid", "role" ]
     }
   ],
 

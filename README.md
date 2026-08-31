@@ -13,8 +13,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 4. External identity providers ✓
 5. Persistence (SQL Server instead of in-memory) ✓
 6. Data ingestion / config tooling ✓
-7. DIT external-service calls (TenantClient, UserClient) ← next
-8. Signing-key management (Key Vault instead of a developer credential)
+7. DIT external-service calls (TenantClient, UserClient) ✓
+8. Signing-key management (Key Vault instead of a developer credential) ← next
 9. IdentityProviderStore (DB-persisted external-provider config)
 ```
 
@@ -35,6 +35,9 @@ A mini Identity Gateway, built from scratch in phases that mirror
   tool: reads `IdentityServerHost/Configurations/IdentityServerConfig.json` and writes it
   into the same SQL Server database IdentityServerHost reads from. See its
   [README](src/Tools/ConfigIngestionTool/README.md).
+- [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's stand-in for two real
+  DIT microservices (a Tenant Management API and a User API) that IdentityServerHost
+  calls at token-issuance time. See its [README](src/ExternalServicesStub/README.md).
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -94,8 +97,11 @@ Verification scripts (repo root):
 - [`test-phase6.ps1`](test-phase6.ps1) — proves `Configurations/IdentityServerConfig.json`
   is authoritative: corrupts a client directly in the database, re-runs
   `ConfigIngestionTool`, and confirms both the row and a real login are restored.
+- [`test-phase7.ps1`](test-phase7.ps1) — proves `tenant_guid`/`role` resolve from
+  `ExternalServicesStub` via IdentityServerHost's own self-issued-JWT calls, and reach
+  both IdentityServerHost's and SampleApi's tokens.
 
-None of the ten drive real browser JavaScript — see
+None of the eleven drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 
@@ -103,4 +109,5 @@ All relevant apps for a given script must already be running (`dotnet run` /
 `npm run dev`, per project README) before you run it. As of Phase 6, IdentityServerHost's
 database also needs `src/Tools/ConfigIngestionTool` run at least once first — see its
 README — since IdentityServerHost itself no longer seeds any Clients/Resources on
-startup.
+startup. As of Phase 7, `src/ExternalServicesStub` must also be running for any login to
+succeed (IdentityServerHost calls it during token issuance).

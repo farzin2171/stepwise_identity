@@ -17,6 +17,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tools", "Tools", "{DCB6FCB8
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConfigIngestionTool", "src\Tools\ConfigIngestionTool\ConfigIngestionTool.csproj", "{43C5C51E-745B-4ACD-9AEE-DC352A3D2861}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExternalServicesStub", "src\ExternalServicesStub\ExternalServicesStub.csproj", "{75748D38-82B6-4538-9E94-9D866105AA90}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -87,6 +89,18 @@ Global
 		{43C5C51E-745B-4ACD-9AEE-DC352A3D2861}.Release|x64.Build.0 = Release|Any CPU
 		{43C5C51E-745B-4ACD-9AEE-DC352A3D2861}.Release|x86.ActiveCfg = Release|Any CPU
 		{43C5C51E-745B-4ACD-9AEE-DC352A3D2861}.Release|x86.Build.0 = Release|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Debug|x64.Build.0 = Debug|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Debug|x86.Build.0 = Debug|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Release|Any CPU.Build.0 = Release|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Release|x64.ActiveCfg = Release|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Release|x64.Build.0 = Release|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Release|x86.ActiveCfg = Release|Any CPU
+		{75748D38-82B6-4538-9E94-9D866105AA90}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -98,5 +112,6 @@ Global
 		{1483AA27-2118-4B58-BD3A-9581180ECECF} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{DCB6FCB8-FF92-AC57-0842-1F72A354D6B1} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{43C5C51E-745B-4ACD-9AEE-DC352A3D2861} = {DCB6FCB8-FF92-AC57-0842-1F72A354D6B1}
+		{75748D38-82B6-4538-9E94-9D866105AA90} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

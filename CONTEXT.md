@@ -37,9 +37,10 @@ MvcClient's own tenant abstraction, ported from `Applications.Apply` — resolve
 mechanism for a related concept; the two `TenantContext`s don't share code or a type.
 
 **Tenants.cs**:
-The hardcoded tenant-key → GUID/display-name dictionary standing in for the real IdG's
-`TenantClient` HTTP lookup. Deliberately has no cache — the reason the real system's
-never-expiring-cache bug (see `TenantClient` below) can't reproduce in this sample.
+The hardcoded tenant-key → display-name dictionary (plus `ResolveTenantKey`, parsing
+*which* tenant a login is for from `acr_values`). A separate concern from `TenantClient`
+below, which resolves that same key to a GUID over HTTP — the two aren't a "not yet
+ported" pair, they were never the same thing.
 
 **ExternalUserStore**:
 The first-login provisioning store for federated identities: persists what a federated
@@ -80,9 +81,34 @@ for the real IdG's since-deleted Data Ingestion Tool
 _Avoid_: "the seed step" — `SeedData` (IdentityServerHost) only migrates schema now; it
 doesn't seed rows as of Phase 6.
 
-**TenantClient** / **UserClient** (real IdG, not yet ported):
-The real IdG's own HTTP clients to sibling DIT microservices — `TenantClient.GetTenantAsync`
-(Tenant Management service, Redis-cached forever — the never-expiring-cache bug) and
-`UserClient.GetRoleAsync` (User service, never cached). Planned for Phase 7; named here
-because Phase 3's `Tenants.cs` already exists specifically *because* this isn't ported
-yet.
+**TenantClient** / **UserClient** (IdentityServerHost):
+Ported in Phase 7. HTTP clients to `ExternalServicesStub`, authenticated with a
+self-issued JWT (`IIdentityServerTools.IssueClientJwtAsync`) rather than a registered
+OAuth client. `TenantClient.GetTenantAsync` resolves a tenant *key* ("acme") to its
+`tenant_guid` claim, cached forever on purpose (the real system's own bug, reproduced
+here). `UserClient.GetRoleAsync` resolves a `role` claim, never cached — the deliberate
+contrast. Both called from `SampleProfileService`, not a separate component — see
+`ExternalServicesStub` below.
+_Avoid_: confusing this with `Tenants.cs` — that resolves *which* tenant a login is for
+(from `acr_values`); `TenantClient` only resolves *that* tenant's GUID, a separate,
+downstream, additive step.
+
+**tenant_guid**:
+The claim `TenantClient` adds, holding the GUID `ExternalServicesStub` resolved from the
+`tenant_id` claim's key. Additive, not a replacement — `tenant_id` still holds the
+friendly key (Phase 3's shape), since MvcClient/SampleApi's tenant resolution both
+already depend on that shape.
+
+**role**:
+The claim `UserClient` adds, holding whatever `ExternalServicesStub` returns for a
+subject id — never cached. Exists purely to contrast with `tenant_guid`'s cached (and
+deliberately broken) lookup; not a real permissions/roles system.
+
+**ExternalServicesStub**:
+The stand-in for the real IdG's two sibling DIT microservices (Tenant Management API,
+User API), collapsed into one process. Validates the self-issued JWTs
+`TenantClient`/`UserClient` send by trusting IdentityServerHost's own signing key —
+nothing else to configure.
+_Avoid_: confusing with `ExternalIdp` — that's a stand-in for an external *identity*
+provider (a login source); this is a stand-in for backend *data* services IdentityServerHost
+calls at token-issuance time, never involved in authentication itself.

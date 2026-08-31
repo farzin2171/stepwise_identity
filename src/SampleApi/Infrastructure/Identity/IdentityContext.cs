@@ -30,7 +30,7 @@ public class IdentityContext : IIdentityContext
         TenantKey = IdentityType switch
         {
             // Requires the client to have requested BOTH "api1" and "tenant" — see
-            // IdentityServerHost/Config.cs's ApiResource("api1").UserClaims for why "tenant_id" reaches
+            // IdentityServerHost/Configurations/IdentityServerConfig.json's ApiResource("api1").UserClaims for why "tenant_id" reaches
             // the access token at all, not just the ID token.
             IdentityType.User => principal.FindFirst("tenant_id")?.Value,
 
