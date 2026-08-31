@@ -13,8 +13,8 @@ actually is under all its production scaffolding.
 5. Persistence (SQL Server instead of in-memory) ✓
 6. Data ingestion / config tooling ✓
 7. DIT external-service calls (TenantClient, UserClient) ✓
-8. Signing-key management (Key Vault instead of a developer credential) ← next
-9. IdentityProviderStore (DB-persisted external-provider config)
+8. Signing-key management (Key Vault instead of a developer credential) ✓
+9. IdentityProviderStore (DB-persisted external-provider config) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -723,8 +723,9 @@ for the exact steps.
 - **No custom `IdentityProviderStore`.** `ExternalProviders` is still
   `appsettings.json`-only — the real IdG persists this in SQL too. Planned for a future
   phase (see the roadmap).
-- **`AddDeveloperSigningCredential()` is still a throwaway key on disk.** The real IdG
-  loads a real certificate from Azure Key Vault. Also planned for a future phase.
+- ~~**`AddDeveloperSigningCredential()` is still a throwaway key on disk.**~~ Resolved
+  in Phase 8 — `KeyManagement:Provider: "AzureKeyVault"` swaps in a real Key Vault-backed
+  key. Still the default here, on purpose.
 - **Migrations run automatically on every startup**, no gate. Fine for one local
   database; the real system's `ApplyMigrations` flag exists for a reason this sample
   doesn't have yet (a shared, multi-instance production database).
@@ -953,6 +954,104 @@ code, not just data — see the script's own "try it yourself" output for the ex
   downstream, additive step. The two were never the same concern, even though Phase 3's
   README caveat could be read that way at a glance.
 
+## Phase 8 — signing-key management
+
+Every token this sample has ever issued was signed with
+`AddDeveloperSigningCredential()` — a throwaway RSA key written to `tempkey.jwk`
+(gitignored) and reused across restarts, but never rotated, never access-controlled,
+and gone the moment someone deletes that file. Phase 1's README named the real IdG's
+actual answer to this from day one: `AddCertificates()`, loading a real certificate
+from Azure Key Vault. Phase 8 ports it.
+
+### `KeyManagement/SigningKeyExtensions.cs` — a dispatcher, not a store
+
+```csharp
+.AddSigningKey(builder.Configuration)
+```
+
+replaces `.AddDeveloperSigningCredential()` directly in `Program.cs`. Reading
+`KeyManagement:Provider`, it either calls `AddDeveloperSigningCredential()` itself
+(`Provider` unset or `"Developer"` — the default, so this sample keeps running with zero
+Azure setup unless you opt in) or registers `AzureKeyVaultKeyStore` for
+`Provider: "AzureKeyVault"`. **Where this sample simplifies:** the real
+`AddCertificates()` branches across three providers (`None`/`Azure`/`Local`, the last one
+loading a certificate from a local file path for on-premise deployments) — this course
+only needed the two ends of that spectrum, so `Local` isn't ported.
+
+### `KeyManagement/AzureKeyVaultKeyStore.cs` — one class, two Duende interfaces
+
+```csharp
+public class AzureKeyVaultKeyStore : ISigningCredentialStore, IValidationKeysStore
+```
+
+Exactly the real IdG's own shape (`IdentityServer/Stores/AzureKeyVaultKeyStore.cs`) — a
+single class answering both "what do I sign with" and "what's currently valid to
+verify with," backed by `Azure.Security.KeyVault.Certificates`' `CertificateClient`.
+`SigningKeyExtensions` registers **one shared instance** for both interfaces
+(`AddSingleton<AzureKeyVaultKeyStore>()`, then two `AddSingleton<TInterface>(sp =>
+sp.GetRequiredService<AzureKeyVaultKeyStore>())` lines) rather than two independent
+ones — otherwise there'd be two separate `CertificateClient`s and two separate cache
+entries for what should be one fact.
+
+### Rollover — every version becomes a validation key; only one signs
+
+```csharp
+var rolloverCutoff = DateTimeOffset.UtcNow.AddHours(-_options.RolloverDelayHours);
+var signingVersion = candidates
+    .Where(c => c.NotBefore <= rolloverCutoff)
+    .OrderByDescending(c => c.NotBefore)
+    .FirstOrDefault() ?? candidates.OrderByDescending(c => c.NotBefore).First();
+```
+
+A new certificate version doesn't immediately start signing tokens — it has to be older
+than `RolloverDelayHours` (48 by default, same as the real system) first. Every
+enabled, non-expired version — including brand-new ones still waiting out that delay —
+becomes a **validation** key regardless, published via `jwks`. That ordering is the
+entire point: a relying party's cached JWKS response has time to pick up a new key as
+*valid* before this store ever picks it to actually *sign* with, and a token signed
+moments before a rotation keeps validating because its signing version never stopped
+being a validation key too.
+
+**A real .NET gotcha, sidestepped rather than worked around:**
+`X509Certificate2.NotBefore`/`NotAfter` are `DateTime` in the **local time zone**, not
+UTC — a well-known trap for exactly this kind of comparison. This store compares
+`Azure.Security.KeyVault.Certificates.CertificateProperties.NotBefore`/`ExpiresOn`
+instead, which the Key Vault SDK returns as `DateTimeOffset`, always UTC — the
+downloaded `X509Certificate2`'s own (local-time) fields are never compared against
+anything here.
+
+### Verified without a real vault: the dispatcher actually dispatches
+
+Without Azure access in this environment, the actual Key Vault round trip couldn't be
+tested end to end here — but the wiring was: pointing `KeyManagement:AzureKeyVault:VaultName`
+at a name that cannot exist and hitting `/.well-known/openid-configuration/jwks`
+produced a real `Azure.RequestFailedException` — DNS resolution failing against
+`nonexistent-vault-xyz123.vault.azure.net`, four retries deep through the Azure SDK's own
+retry policy, with `AzureKeyVaultKeyStore.LoadKeysFromVaultAsync` in the stack trace.
+That's proof the dispatcher genuinely activates the Key Vault path and makes a real
+network attempt — not a silently-successful fallback to the developer key. See
+[`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md) for how to create a
+real vault and verify an actual successful round trip, including certificate rotation.
+
+### Verification
+
+`pwsh ./test-phase8.ps1` confirms the default developer-key path still signs tokens
+normally after adding the Key Vault code path, then prints the manual steps above (the
+same ones used to verify the claim while writing this section) for proving the
+`AzureKeyVault` path is really wired up — restarting a service mid-script with different
+config isn't something any other `test-phaseN.ps1` does either.
+
+### What's deliberately still missing
+
+- **No auto-renewal.** This store reads whatever certificate versions already exist; it
+  never asks Key Vault to issue a new one. A real deployment would pair this with Key
+  Vault's own certificate lifecycle actions (auto-renew before expiry) — out of scope
+  for what this phase is teaching.
+- **No `Local` provider.** See "where this sample simplifies" above.
+- **No resilience policy around the Key Vault calls**, matching the real system exactly
+  — it has none either, relying on the Azure SDK's own built-in retry behavior (visible
+  in the "four retries" trace above).
+
 ## Running it
 
 0. **Prerequisites.**
@@ -1058,9 +1157,12 @@ code, not just data — see the script's own "try it yourself" output for the ex
    landed in SQL Server; [`test-phase6.ps1`](../../test-phase6.ps1) corrupts a client
    directly in the database and confirms `ConfigIngestionTool` restores it;
    [`test-phase7.ps1`](../../test-phase7.ps1) confirms `tenant_guid`/`role` resolve from
-   `ExternalServicesStub` and reach both IdentityServerHost's and SampleApi's tokens.
-   None of the nine drive real browser JavaScript, so steps 2–4 above still need a
-   manual pass at least once (see `ReactSpa`'s README for why):
+   `ExternalServicesStub` and reach both IdentityServerHost's and SampleApi's tokens;
+   [`test-phase8.ps1`](../../test-phase8.ps1) confirms the default developer signing key
+   still works, then prints manual steps for proving the Key Vault path (see
+   [`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md)). None of the ten
+   drive real browser JavaScript, so steps 2–4 above still need a manual pass at least
+   once (see `ReactSpa`'s README for why):
 
    ```powershell
    pwsh ./test-phase2.ps1
@@ -1072,6 +1174,7 @@ code, not just data — see the script's own "try it yourself" output for the ex
    pwsh ./test-phase5.ps1
    pwsh ./test-phase6.ps1
    pwsh ./test-phase7.ps1
+   pwsh ./test-phase8.ps1
    ```
 
 ## What's deliberately missing (and why)
@@ -1104,6 +1207,13 @@ code, not just data — see the script's own "try it yourself" output for the ex
   not tenant resolution itself — `Tenants.ResolveTenantKey` (*which* tenant a login is
   for, parsed from `acr_values`) is a different concern from `TenantClient.GetTenantAsync`
   (*that* tenant's GUID), and only the second one is a real HTTP call in either system.
+- ~~**A throwaway dev signing key, with no production equivalent.**~~ Resolved in
+  Phase 8 — `KeyManagement:Provider: "AzureKeyVault"` swaps in a real Key Vault-backed
+  key, verified to genuinely activate (see its own section above), though not verified
+  against a real vault in this environment — see
+  [`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md) for that. Still
+  defaults to the developer key, on purpose, so this sample runs with zero Azure setup
+  unless you opt in.
 - **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
   configurable external-id claim name, no duplicate-claim handling — Carol's `name`
   claim just works because ExternalIdp only ever sends one of it.

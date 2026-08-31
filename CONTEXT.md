@@ -112,3 +112,23 @@ nothing else to configure.
 _Avoid_: confusing with `ExternalIdp` — that's a stand-in for an external *identity*
 provider (a login source); this is a stand-in for backend *data* services IdentityServerHost
 calls at token-issuance time, never involved in authentication itself.
+
+**KeyManagement:Provider**:
+The config value (`"Developer"` or `"AzureKeyVault"`) `SigningKeyExtensions.AddSigningKey`
+switches on, ported in Phase 8. `"Developer"` is the default — this sample runs with zero
+Azure setup unless you opt in. Not the same three-way choice the real IdG's
+`KeyManagementProvider` makes (`None`/`Azure`/`Local`) — `Local` (a cert-file path) isn't
+ported here.
+
+**AzureKeyVaultKeyStore**:
+One class implementing both `ISigningCredentialStore` and `IValidationKeysStore`,
+registered as a single shared singleton for both (not two independent instances) so
+there's one `CertificateClient` and one cache entry. Every enabled, non-expired
+certificate version in the vault becomes a validation key; only the newest version older
+than `RolloverDelayHours` becomes the active signing key — see
+`IdentityServerHost/README.md`'s Phase 8 section for why that ordering, not just what it
+does.
+_Avoid_: assuming this was verified against a real vault in this environment — it wasn't
+(see [`docs/azure-key-vault-setup.md`](src/IdentityServerHost/docs/azure-key-vault-setup.md)).
+What *was* verified: the dispatcher genuinely activates this store and makes a real
+network attempt when configured, rather than silently falling back to the developer key.

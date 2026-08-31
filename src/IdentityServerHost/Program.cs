@@ -3,6 +3,7 @@ using IdentityServerHost.Configurations.Authentication;
 using IdentityServerHost.Configurations.Authentication.Helpers;
 using IdentityServerHost.Data;
 using IdentityServerHost.ExternalServices;
+using IdentityServerHost.KeyManagement;
 using IdentityServerHost.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
@@ -90,7 +91,10 @@ builder.Services.AddIdentityServer(options =>
            options.ConfigureDbContext = b =>
                b.UseSqlServer(connectionString, sql => sql.MigrationsAssembly(migrationsAssembly));
        })
-       .AddDeveloperSigningCredential()
+       // Phase 8: "KeyManagement:Provider" picks between this throwaway dev key and a real Azure Key
+       // Vault-backed one — see KeyManagement/SigningKeyExtensions.cs. Defaults to the dev key, so
+       // this sample keeps running with zero Azure setup unless you opt in.
+       .AddSigningKey(builder.Configuration)
        // Registers TestUserStore in DI (AccountController takes a dependency on it) and a default
        // IResourceOwnerPasswordValidator/IProfileService pair backed by the same in-memory list. The real
        // IdG has no equivalent — it has no local password login at all, only external IdPs.

@@ -14,8 +14,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 5. Persistence (SQL Server instead of in-memory) ✓
 6. Data ingestion / config tooling ✓
 7. DIT external-service calls (TenantClient, UserClient) ✓
-8. Signing-key management (Key Vault instead of a developer credential) ← next
-9. IdentityProviderStore (DB-persisted external-provider config)
+8. Signing-key management (Key Vault instead of a developer credential) ✓
+9. IdentityProviderStore (DB-persisted external-provider config) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -49,6 +49,16 @@ External providers are now config-driven — a first step toward how
 - [src/IdentityServerHost/docs/azure-entra-b2c-setup.md](src/IdentityServerHost/docs/azure-entra-b2c-setup.md)
   — step-by-step setup for a real Microsoft Entra ID tenant or Azure AD B2C tenant,
   updated for the config-driven wiring above.
+
+IdentityServerHost's signing key is config-driven too, as of Phase 8 — swap
+`AddDeveloperSigningCredential()` for a real Azure Key Vault-backed one via
+`KeyManagement:Provider`, ported into
+[src/IdentityServerHost/KeyManagement](src/IdentityServerHost/KeyManagement):
+- [src/IdentityServerHost/docs/azure-key-vault-setup.md](src/IdentityServerHost/docs/azure-key-vault-setup.md)
+  — creating a real vault and signing certificate, the RBAC role (and the
+  certificates-vs-secrets gotcha) the app actually needs, authenticating with either
+  your own `az login` session or a service principal, and verifying and rotating a real
+  key end to end.
 
 MvcClient also now carries a port of `Applications.Apply`'s (the real production MVC
 BFF) multi-tenancy infrastructure and its `IdentityGatewayApi`/`ExternalServicesApi`
@@ -100,8 +110,13 @@ Verification scripts (repo root):
 - [`test-phase7.ps1`](test-phase7.ps1) — proves `tenant_guid`/`role` resolve from
   `ExternalServicesStub` via IdentityServerHost's own self-issued-JWT calls, and reach
   both IdentityServerHost's and SampleApi's tokens.
+- [`test-phase8.ps1`](test-phase8.ps1) — confirms the default developer signing key
+  still works after adding the Key Vault code path, then prints manual steps for
+  proving the `AzureKeyVault` provider is really wired up (see
+  [src/IdentityServerHost/docs/azure-key-vault-setup.md](src/IdentityServerHost/docs/azure-key-vault-setup.md)
+  for using a real vault).
 
-None of the eleven drive real browser JavaScript — see
+None of the twelve drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 
