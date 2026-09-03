@@ -36,6 +36,41 @@ MvcClient's own tenant abstraction, ported from `Applications.Apply` — resolve
 `tenant_id` *claim* on the already-signed-in user, not a query parameter. A different
 mechanism for a related concept; the two `TenantContext`s don't share code or a type.
 
+**Confirmed in Phase 10**, which set out to merge them and concluded it shouldn't. They are
+not one abstraction with two resolvers: IdentityServerHost's resolves *before*
+authentication and treats "no tenant" as normal (`test-phase3.ps1` §4 depends on that);
+MvcClient's resolves *after* authentication and treats "no tenant" as a 401 (via
+`RequireTenantAttribute`). They disagree about whether the absence of a tenant is an error,
+which is the invariant that would have to be shared for one type to serve both. Full
+comparison table in [`src/Mini.Infrastructure/README.md`](src/Mini.Infrastructure/README.md).
+_Avoid_: "the tenant context" unqualified — always name which project's.
+
+**Mini.Infrastructure**:
+The single-csproj class library holding the plumbing more than one project in this repo
+consumes: `Identity/` (`IIdentityContext` and friends), `ExternalServices/` (`TokenClient`,
+the service registry), `Http/` (`ResiliencePolicies`). Created in Phase 10 by *extracting*
+existing duplicates, not by designing a library up front.
+
+Distinct from the `MyCompany.*` mini-libraries in the DIT library course at
+`C:\MyWork\MyLearning\EqusoftInfra`: those exist to teach how a DIT library is *built*
+internally; this exists to be the thing three projects here actually consume. When a file
+here needs to explain a real DIT library's internals, it links to that course.
+_Avoid_: calling it "the mini DIT libraries" or treating it as a port of
+`Libraries.Infrastructure` — it's a de-duplication, and most of `Libraries.Infrastructure`
+has no counterpart here.
+
+**Tenant registry**:
+A per-application store of which tenants exist. There are **three**, and they share no
+code, table, or type: `IdentityServerHost/Tenants.cs` (key → display name),
+`MvcClient/Infrastructure/MultiTenant/Tenants.cs` (key → `Tenant`), and
+`ExternalServicesStub`'s `tenantsByKey` (key → GUID). They agree only by convention,
+mirroring the real system, where Apply's `Tenants` table and the IdG's registry are
+independent stores reconciled by an ops process.
+
+The drift is currently live and deliberate: `initech` (Phase 9) exists in two of the three,
+so an Initech user can log in at IdentityServerHost and then be rejected by MvcClient.
+_Avoid_: "the tenant list" — there isn't one.
+
 **Tenants.cs**:
 The hardcoded tenant-key → display-name dictionary (plus `ResolveTenantKey`, parsing
 *which* tenant a login is for from `acr_values`). A separate concern from `TenantClient`

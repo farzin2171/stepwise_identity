@@ -9,8 +9,7 @@ using IdentityServerHost.KeyManagement;
 using IdentityServerHost.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
-using Polly;
-using Polly.Extensions.Http;
+using Mini.Infrastructure.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -51,22 +50,15 @@ builder.Services.Configure<ExternalServicesOptions>(builder.Configuration.GetSec
 // wrong place for that cache to live forever, on purpose.
 builder.Services.AddDistributedMemoryCache();
 
-// Same Polly retry + circuit-breaker shape MvcClient already established for its own external calls
-// (Program.cs there) — reused verbatim rather than reinvented.
-static IAsyncPolicy<HttpResponseMessage> RetryPolicy() =>
-    HttpPolicyExtensions.HandleTransientHttpError()
-        .WaitAndRetryAsync(2, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)));
-
-static IAsyncPolicy<HttpResponseMessage> CircuitBreakerPolicy() =>
-    HttpPolicyExtensions.HandleTransientHttpError()
-        .CircuitBreakerAsync(3, TimeSpan.FromSeconds(30));
-
+// Phase 10: these two policies used to be declared right here, as static local functions, with a comment
+// claiming they were "reused verbatim rather than reinvented" from MvcClient. They weren't reused — they
+// were copied. Both copies are now Mini.Infrastructure.Http.ResiliencePolicies.
 builder.Services.AddHttpClient<TenantClient>()
-       .AddPolicyHandler(RetryPolicy())
-       .AddPolicyHandler(CircuitBreakerPolicy());
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 builder.Services.AddHttpClient<UserClient>()
-       .AddPolicyHandler(RetryPolicy())
-       .AddPolicyHandler(CircuitBreakerPolicy());
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 
 var identityServerBuilder = builder.Services.AddIdentityServer(options =>
        {
@@ -164,5 +156,11 @@ app.UseIdentityServer();
 app.UseAuthorization();
 
 app.MapDefaultControllerRoute();
+
+// Phase 10: an unauthenticated liveness probe, so run-all.ps1 can tell "this process is listening and
+// finished starting" from "this port is open but the app is still warming up." Deliberately the plainest
+// thing that answers that question — the real services use DIT.HealthChecks, which additionally reports
+// on each dependency (database, downstream service) and is what an orchestrator scrapes.
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
 
 app.Run();

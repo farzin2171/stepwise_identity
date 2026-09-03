@@ -4,8 +4,8 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
+using Mini.Infrastructure.ExternalServices;
 using MvcClient.Infrastructure.Configuration;
-using MvcClient.Infrastructure.Externals;
 using MvcClient.Infrastructure.MultiTenant;
 
 namespace MvcClient.Controllers;

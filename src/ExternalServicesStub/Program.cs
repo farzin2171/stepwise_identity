@@ -58,4 +58,10 @@ app.MapGet("/api/v2/User/identities/role/{subjectId}", (string subjectId) =>
        Results.Text(rolesBySubjectId.GetValueOrDefault(subjectId, "Member")))
    .RequireAuthorization();
 
+// Phase 10: an unauthenticated liveness probe, so run-all.ps1 can tell "this process is listening and
+// finished starting" from "this port is open but the app is still warming up." Deliberately the plainest
+// thing that answers that question — the real services use DIT.HealthChecks, which additionally reports
+// on each dependency (database, downstream service) and is what an orchestrator scrapes.
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
+
 app.Run();

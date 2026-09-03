@@ -15,7 +15,8 @@ actually is under all its production scaffolding.
 7. DIT external-service calls (TenantClient, UserClient) ✓
 8. Signing-key management (Key Vault instead of a developer credential) ✓
 9. IdentityProviderStore (DB-persisted external-provider config) ✓
-10. Mini.Infrastructure (extract the duplicated tenant/identity/token plumbing) ← next
+10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
+11. Mini.UserService (a real service replaces ExternalServicesStub) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -1258,6 +1259,190 @@ there, but nothing reads it. Then set it back to `true` and, instead, flip the r
 `Enabled` column to `0` directly in SQL. Same visible result, no restart needed. Two very
 different mechanisms, one indistinguishable outcome — which is which when you're debugging
 a carrier reporting "our SSO button vanished"?
+
+## Phase 10 — extracting `Mini.Infrastructure`
+
+Nine phases of building one project at a time left the same concerns implemented more than
+once. This phase's job was to find the genuine duplicates and extract them into
+[`src/Mini.Infrastructure`](../Mini.Infrastructure) — and, more importantly, to find out
+which of the apparent duplicates weren't duplicates at all.
+
+No features. The measure of success is that all six earlier verification scripts pass
+**unmodified**.
+
+### What looked duplicated
+
+Three things had the same names in different projects:
+
+- `TenantContext` — in `IdentityServerHost/` and in `MvcClient/Infrastructure/MultiTenant/`
+- `TenantResolutionMiddleware` — same two places
+- `Tenants` — same two places
+
+...plus `SampleApi`'s `IIdentityContext`, which is a third variation on "who is this
+request for."
+
+### What was actually shared, and got extracted
+
+| Moved to `Mini.Infrastructure` | From | Why it's genuinely shared |
+| --- | --- | --- |
+| `Http/ResiliencePolicies` | both `Program.cs` files | byte-identical copies |
+| `Identity/IIdentityContext`, `IdentityContext`, `IdentityType`, `IdentityContextMiddleware`, `ServiceAccountOnlyFilter` | SampleApi | every API in this repo needs "who is calling"; two more arrive in Phases 11 and 14 |
+| `ExternalServices/ITokenClient`, `TokenClient`, `ServiceAccount`, `ServiceDefinition`, `ExternalServicesConfiguration` | MvcClient | Phase 11 needs the same service-account token client in IdentityServerHost |
+
+The resilience policies are the clearest case, and the comment that used to sit above them
+in `IdentityServerHost/Program.cs` gives the game away:
+
+> Same Polly retry + circuit-breaker shape MvcClient already established for its own
+> external calls (Program.cs there) — reused verbatim rather than reinvented.
+
+"Reused verbatim" was generous. They were copied. Two copies of a retry policy is the
+textbook drift problem: change the retry count in one and nothing fails, so nobody finds
+out until two services behave differently under load.
+
+### What was NOT extracted, and why that's the real finding
+
+This is the part worth reading. `CONTEXT.md` asserted that the two `TenantContext`s were
+different concepts that "don't share code or a type." That was an assertion. This phase
+tested it, and **the assertion survived**:
+
+| | IdentityServerHost | MvcClient |
+| --- | --- | --- |
+| Resolved from | `acr_values=tenant:<name>` (query string) | the `tenant_id` **claim** |
+| Resolved when | **before** authentication | **after**; needs `IsAuthenticated` |
+| Answers | which tenant this login *attempt* is for | which tenant the signed-in user *is in* |
+| No tenant means | normal — `test-phase3.ps1` §4 asserts a login with no tenant hint still succeeds | a 401, via `RequireTenantAttribute` |
+| Shape | mutable `TenantKey` + `DisplayName` | one-time `SetTenant(Tenant)`, `Tenant` get-only |
+
+They sit on opposite sides of the authentication boundary and *disagree about whether "no
+tenant" is an error*. Merging them means inventing a type whose invariants neither caller
+holds. Same for the two `TenantResolutionMiddleware`s, which share nothing but a name.
+
+The two `Tenants` registries stay separate for a different and stronger reason —
+MvcClient's own file already said it:
+
+> deliberately a SEPARATE registry from IdentityServerHost's own `Tenants.cs` [...] in the
+> real system, Apply's Tenants table and the IdG's tenant registry are two independent
+> stores, kept in sync by an ops process, not by sharing code — a mismatch between them
+> [...] is a real, meaningful failure mode this sample can now actually reproduce.
+
+Sharing them would make a real production failure mode *unrepresentable*. The full
+write-up, including `IdentityGatewayConfiguration` and IdentityServerHost's
+`ExternalServicesOptions` (both of which also stay put), is in
+[`Mini.Infrastructure/README.md`](../Mini.Infrastructure/README.md).
+
+The lesson generalises: **shared names are not shared concepts, and the test is whether the
+two callers agree on the invariants** — not whether the fields line up.
+
+### Comparison against the real system
+
+| | Real system | This sample |
+| --- | --- | --- |
+| Where shared plumbing lives | `Libraries.Infrastructure`, ~26 NuGet packages (`DIT.Identity`, `DIT.HTTP`, `DIT.WebApi`, …) | one `Mini.Infrastructure` csproj, folders not packages |
+| How consumers get it | `PackageReference` + `AddDigitalInsuranceTools(...).AddX()` | `ProjectReference`, plain DI registration |
+| Resilience config | `DIT.HTTP` binds retry counts and breaker thresholds per named client from `appsettings` | hardcoded in `ResiliencePolicies` |
+| Identity context | `DIT.Identity` models four caller kinds (User, Service, Guest, OnBehalfOf) and reads explicit `service_isService` / `service_tenant` claims | two kinds; infers Service from the *absence* of `sub` |
+| Health checks | `DIT.HealthChecks`, reporting per-dependency status | one `/health` returning `{ status = "healthy" }` |
+
+For *why* the real libraries are built the way they are — the builder-extension pattern,
+options binding, the provider switch — see the DIT library course at
+`C:\MyWork\MyLearning\EqusoftInfra` (Series 2 for `DIT.Identity`, Series 9 for `DIT.HTTP`).
+This repo deliberately doesn't re-explain library internals; see
+[`Mini.Infrastructure/README.md`](../Mini.Infrastructure/README.md) for that division of
+labour.
+
+### Where this sample simplifies
+
+- **One csproj, not four.** The real `DIT.Connectors` splits Data/Domain/HTTP/AspNetCore to
+  enforce a dependency direction. `Mini.Infrastructure` gets split only when a phase forces
+  it — and that would be a "things that broke" entry, not a silent refactor.
+- **No `AddMiniInfrastructure()` builder extension.** Consumers register what they use, by
+  hand. The real libraries' fluent builder is a big part of what EqusoftInfra teaches, and
+  duplicating it here would be writing that lesson twice.
+- **`/health` reports nothing about dependencies.** It answers "is this process listening
+  and finished starting," which is all `run-all.ps1` needs.
+
+### Things that broke, and why they're worth knowing
+
+1. **A class library doesn't get the web SDK's implicit usings.** `IdentityContextMiddleware`
+   and `ServiceAccountOnlyFilter` compiled fine inside SampleApi and immediately failed with
+   five `CS0246`s (`RequestDelegate`, `HttpContext`, `IEndpointFilter`,
+   `EndpointFilterInvocationContext`, `EndpointFilterDelegate`) once moved. `FrameworkReference
+   Include="Microsoft.AspNetCore.App"` makes the *types* available; the `Microsoft.NET.Sdk`
+   implicit-usings set doesn't include the ASP.NET Core namespaces the way `Microsoft.NET.Sdk.Web`
+   does. Fixed with explicit `using Microsoft.AspNetCore.Http;`. Moving ASP.NET Core code out of
+   a web project always costs this.
+
+2. **I wrote `run-all.ps1` excluding `ExternalServicesStub`, and that was wrong.** The plan for
+   this arc said the stub should drop out of the default startup set as a superseded artifact.
+   At Phase 10 it isn't superseded yet — `Mini.UserService` doesn't exist until Phase 11, and
+   IdentityServerHost still calls the stub during token issuance, so *no login succeeds without
+   it*. A plan written several phases ahead can be right about the destination and wrong about
+   the timing.
+
+3. **`git mv` matters more than it looks.** Moving files with `mv` and re-adding them makes git
+   record a delete plus an add, which loses the history on files whose comments are half the
+   value here. `git mv` preserves it and keeps `git log --follow` working.
+
+4. **Alphabetical using order isn't cosmetic when you script the edit.** `sed`-inserting
+   `using Mini.Infrastructure.ExternalServices;` put it after `Microsoft.Extensions.Options`
+   in one file and before it in another. `Mic` sorts before `Min`, so it belongs after every
+   `Microsoft.*` and before `MvcClient.*`. Worth fixing rather than shrugging at: a
+   consistently-ordered list is one where a human notices an unexpected entry.
+
+5. **`run-all.ps1` makes `dotnet build` fail, and the error doesn't say so.** A running host
+   holds a lock on its own `bin/Debug/net10.0/<Project>.exe`, so rebuilding while it's up
+   produces `MSB3027`/`MSB3021` — "the file is locked by: MvcClient (8904)" — which reads like
+   a broken build rather than "you left the app running." Run `.\run-all.ps1 -Stop` first.
+   This is why the script writes its pid file *before* waiting for health: a service that
+   never came up still needs stopping before the next build.
+
+6. **The move left stale paths in four docs and three code comments.** Comments like
+   "see `Infrastructure/Externals/TokenClient.cs`" and doc headings naming
+   `Infrastructure/Identity/IIdentityContext.cs` all pointed at directories that no longer
+   exist. Nothing failed — stale cross-references never do, which is exactly why they
+   accumulate. Grepping for the old paths after a move is cheap; noticing them six months
+   later is not.
+
+### Verifying it
+
+[`test-phase10.ps1`](../../test-phase10.ps1) covers the five `/health` endpoints and proves the
+moved code behaves identically: `IIdentityContext` still tells a user from a service account
+(and still infers the latter from a missing `sub`), `ServiceAccountOnlyFilter` still answers
+200/403/401 for service/user/anonymous, and per-tenant service accounts still resolve to their
+own tenants.
+
+But the real regression suite is everything that came before. All six pass unmodified:
+`test-phase2`, `test-phase3`, `test-phase4`, `test-phase7`, `test-phase9`, `test-api`.
+
+Start everything with [`run-all.ps1`](../../run-all.ps1) — one command instead of five
+terminals, and it runs `ConfigIngestionTool` in the right order first.
+
+### What's deliberately still missing
+
+- **The tenant-registry drift is real and left in place.** Phase 9 added `initech` to
+  IdentityServerHost's `Tenants.cs` and to `ExternalServicesStub`, but not to MvcClient's. An
+  Initech user can log in at `:5001` and then get a 401 from MvcClient's `RequireTenantAttribute`,
+  because MvcClient's registry has never heard of them. Not a bug to fix — it is exactly the
+  ops-reconciliation failure the design reproduces, now visible in three files.
+- **`IdentityGatewayConfiguration` stays in MvcClient.** One project has that relationship; a
+  config class used by one project isn't shared code.
+- **IdentityServerHost's `ExternalServicesOptions` stays put.** Same config *section name* as
+  MvcClient's, genuinely different shape (self-issued JWT vs. real client credentials). Phase 11
+  converges them, and that's when it moves or dies.
+- **No tests for the moved code beyond behavioural ones.** Phase 10 added no branching decision
+  logic, so per the phase conventions it gets no xunit project. Phase 12 does.
+
+### Try it yourself
+
+Reproduce the drift on purpose. Add a fourth tenant to `IdentityServerHost/Tenants.cs` and
+`ExternalServicesStub`'s `tenantsByKey` — but *not* to `MvcClient/Infrastructure/MultiTenant/Tenants.cs`
+— then ingest a database identity provider for it (Phase 9's mechanism) and log in through
+MvcClient. The login succeeds at `:5001` and then fails at `:5006`, with nothing in either app's
+logs saying "these registries disagree."
+
+Then ask the harder question: which of the three registries should be authoritative, and what
+would it cost to make it so? That's the design question Phase 11's database-per-service split
+starts to answer.
 
 ## Running it
 

@@ -21,7 +21,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 7. DIT external-service calls (TenantClient, UserClient) ✓
 8. Signing-key management (Key Vault instead of a developer credential) ✓
 9. IdentityProviderStore (DB-persisted external-provider config) ✓
-10. Mini.Infrastructure (extract the duplicated tenant/identity/token plumbing) ← next
+10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
+11. Mini.UserService (a real service replaces ExternalServicesStub) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -44,6 +45,20 @@ A mini Identity Gateway, built from scratch in phases that mirror
 - [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's stand-in for two real
   DIT microservices (a Tenant Management API and a User API) that IdentityServerHost
   calls at token-issuance time. See its [README](src/ExternalServicesStub/README.md).
+- [src/Mini.Infrastructure](src/Mini.Infrastructure) — Phase 10's shared plumbing, created
+  by *extracting* what nine phases of building one project at a time had duplicated. Its
+  [README](src/Mini.Infrastructure/README.md) is worth reading for what it deliberately
+  does **not** contain: the two `TenantContext`s and the two tenant registries stay
+  separate, because they turned out to be different concepts wearing the same names.
+
+**Start everything with [`run-all.ps1`](run-all.ps1)** (Phase 10) — one command instead of
+five terminals, running the config-ingestion step first and waiting for each `/health`
+endpoint. `.\run-all.ps1 -Stop` shuts it all down.
+
+There's a current-state map of the whole system in
+[docs/architecture/](docs/architecture/README.md): who runs on which port, the four ways a
+token moves, where state lives, and the three tenant registries that agree only by
+convention. Unlike the phase-by-phase READMEs, it describes the system as it is *now*.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -138,10 +153,17 @@ Verification scripts (repo root):
   real federated login through Duende's dynamic-provider path
   (`/federation/{scheme}/signin`), while `acme` (file-based) and `globex` (none) are
   unaffected.
+- [`test-phase10.ps1`](test-phase10.ps1) — proves the Phase 10 extraction changed nothing
+  observable: five `/health` endpoints answer, `IIdentityContext` still tells a user from a
+  service account, and `ServiceAccountOnlyFilter` still answers 200/403/401. The real
+  regression suite for that phase is every script above it, run unmodified.
 
-None of the thirteen drive real browser JavaScript — see
+None of the fourteen drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
+
+As of Phase 10, `run-all.ps1` does all of the setup below for you — the paragraph is kept
+because knowing what it does is the point.
 
 All relevant apps for a given script must already be running (`dotnet run` /
 `npm run dev`, per project README) before you run it. As of Phase 6, IdentityServerHost's

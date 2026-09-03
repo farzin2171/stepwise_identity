@@ -197,7 +197,7 @@ multi-authority deployment would need this addressed too.
 
 ### b) Service-account (client-credentials) token client
 
-`Infrastructure/Configuration/ServiceAccount.cs`:
+`Mini.Infrastructure/ExternalServices/ServiceAccount.cs` (moved there in Phase 10):
 
 ```csharp
 public class ServiceAccount
@@ -213,7 +213,7 @@ Notice this lives *nested inside* `ExternalServicesConfiguration` (§3), not
 not a mistake in this port; it's a verbatim match of Apply's real, slightly confusing
 `appsettings.json` layout.
 
-`Infrastructure/Externals/TokenClient.cs`:
+`Mini.Infrastructure/ExternalServices/TokenClient.cs` (moved there in Phase 10):
 
 ```csharp
 public async Task<string> GetAccessTokenAsync(ServiceAccount serviceAccount, string tenantKey, CancellationToken ct = default)
@@ -274,7 +274,7 @@ service definitions (`Configuration`, `Authorization`, `Localization`,
 `UserExperience`, `User`, `AssistantManagement`); this sample's holds exactly **one**
 (`SampleApi`) — same pattern, smaller registry.
 
-`Infrastructure/Configuration/ServiceDefinition.cs` + `ExternalServicesConfiguration.cs`:
+`Mini.Infrastructure/ExternalServices/ServiceDefinition.cs` + `ExternalServicesConfiguration.cs` (moved there in Phase 10):
 
 ```csharp
 public class ServiceDefinition

@@ -1,4 +1,6 @@
-namespace SampleApi.Infrastructure.Identity;
+using Microsoft.AspNetCore.Http;
+
+namespace Mini.Infrastructure.Identity;
 
 // Port of Services.Authorization's IdentityPrincipalMiddleware (Libraries.Infrastructure/DIT.Identity),
 // minus the "on-behalf-of" header merge — this sample has no agent-acting-for-client scenario. Must run

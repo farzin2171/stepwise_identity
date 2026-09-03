@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- A class library, not a web project — but it holds middleware, endpoint filters and IResult, so
+         it needs the ASP.NET Core framework types. FrameworkReference is how a library gets them
+         without becoming a web app itself. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="IdentityModel" Version="7.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="10.0.11" />
+  </ItemGroup>
+
+</Project>

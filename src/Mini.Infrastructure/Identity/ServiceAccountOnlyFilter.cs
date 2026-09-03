@@ -1,4 +1,7 @@
-namespace SampleApi.Infrastructure.Identity;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Mini.Infrastructure.Identity;
 
 // Port of Services.Authorization's ServiceAccountAuthorizeFilter
 // (Equisoft.AuthorizationService/Infrastructure/Authorization). The real one is an MVC

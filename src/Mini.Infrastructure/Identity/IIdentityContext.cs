@@ -1,6 +1,6 @@
 using System.Security.Claims;
 
-namespace SampleApi.Infrastructure.Identity;
+namespace Mini.Infrastructure.Identity;
 
 // Port of Services.Authorization's IIdentityContext (Libraries.Infrastructure/DIT.Identity) — a
 // scoped, request-lifetime view of "who is calling right now," derived once from the validated

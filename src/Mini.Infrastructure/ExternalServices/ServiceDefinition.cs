@@ -1,4 +1,4 @@
-namespace MvcClient.Infrastructure.Configuration;
+namespace Mini.Infrastructure.ExternalServices;
 
 // Apply counterpart: Equisoft.Apply.Domain/Configuration/ServiceDefinition.cs, verbatim shape and
 // fallback behavior. Apply has six of these in production (Configuration, Authorization, Localization,

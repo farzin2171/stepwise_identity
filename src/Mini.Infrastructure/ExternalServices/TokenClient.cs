@@ -1,8 +1,7 @@
 using IdentityModel.Client;
 using Microsoft.Extensions.Caching.Memory;
-using MvcClient.Infrastructure.Configuration;
 
-namespace MvcClient.Infrastructure.Externals;
+namespace Mini.Infrastructure.ExternalServices;
 
 // Apply counterpart: Equisoft.Apply.Data/Externals/Clients/TokenClient.cs — the "IdG as an OAuth2
 // client-credentials provider" pattern, used everywhere Apply needs a SERVICE-ACCOUNT token rather than
