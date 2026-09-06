@@ -1,4 +1,4 @@
-namespace MvcClient.Infrastructure.Configuration;
+namespace Mini.Infrastructure.ExternalServices;
 
 // Apply counterpart: Equisoft.Apply.Domain/Configuration/ExternalServicesConfiguration.cs, verbatim
 // shape and fallback logic (a service definition inherits the registry's global BaseUri/ServiceAccount

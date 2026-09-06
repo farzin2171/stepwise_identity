@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Duende.IdentityServer.Models;
 
 namespace ConfigIngestionTool;
@@ -13,6 +14,7 @@ public class ConfigDocument
     public List<ApiScopeDto> ApiScopes { get; set; } = [];
     public List<ApiResourceDto> ApiResources { get; set; } = [];
     public List<ClientDto> Clients { get; set; } = [];
+    public List<IdentityProviderDto> IdentityProviders { get; set; } = [];
 }
 
 // "kind" covers the two standard scopes every OIDC server needs (IdentityResources.OpenId()/Profile()
@@ -100,5 +102,48 @@ public class ClientDto
         }
 
         return client;
+    }
+}
+
+// Phase 9: the fifth category. Unlike the four above, these rows aren't read by Duende's stock stores —
+// they're read by IdentityServerHost's own IdentityProviderStore subclass, which maps Type onto a
+// strongly-typed provider. Ingestion doesn't know or care about that: it just writes rows.
+//
+// IdG counterpart: the real repo's config/identityProviders.json, whose shape this matches field for
+// field (Scheme / DisplayName / Type / Properties) so a real entry can be pasted in with only the
+// secrets changed.
+public class IdentityProviderDto
+{
+    public required string Scheme { get; set; }
+    public string? DisplayName { get; set; }
+    public required string Type { get; set; }
+    public bool Enabled { get; set; } = true;
+
+    // JsonElement rather than string, on purpose. Duende's Properties bag is string-to-string, but the
+    // real identityProviders.json puts a nested OBJECT under "FederatedConfiguration" — and
+    // BaseIdentityProvider reads that key back out with JsonSerializer.Deserialize. So the bag's values
+    // are sometimes plain strings and sometimes JSON documents that happen to be stored as strings.
+    // Binding to JsonElement lets one file express both without quoting JSON inside JSON by hand.
+    public Dictionary<string, JsonElement> Properties { get; set; } = [];
+
+    public IdentityProvider ToModel()
+    {
+        var provider = new IdentityProvider(Type)
+        {
+            Scheme = Scheme,
+            DisplayName = DisplayName,
+            Enabled = Enabled
+        };
+
+        foreach (var (key, value) in Properties)
+        {
+            // A JSON string becomes its unquoted value; anything else (object, array, number, bool)
+            // becomes its raw JSON text. That's precisely the round trip BaseIdentityProvider expects.
+            provider.Properties[key] = value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? string.Empty
+                : value.GetRawText();
+        }
+
+        return provider;
     }
 }

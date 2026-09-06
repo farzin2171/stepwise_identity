@@ -1,4 +1,4 @@
-namespace SampleApi.Infrastructure.Identity;
+namespace Mini.Infrastructure.Identity;
 
 // Services.Authorization's real IIdentityContext models four kinds of caller (User, Service,
 // Guest, OnBehalfOf — see Libraries.Infrastructure/DIT.Identity/IdentityType.cs). This sample only

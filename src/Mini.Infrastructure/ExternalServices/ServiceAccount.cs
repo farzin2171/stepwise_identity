@@ -1,4 +1,4 @@
-namespace MvcClient.Infrastructure.Configuration;
+namespace Mini.Infrastructure.ExternalServices;
 
 // Apply counterpart: Equisoft.Apply.Domain/Configuration/ServiceAccount.cs, verbatim shape. Notice this
 // lives nested inside ExternalServicesConfiguration (below), not IdentityGatewayConfiguration — even

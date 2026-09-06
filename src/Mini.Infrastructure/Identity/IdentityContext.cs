@@ -1,6 +1,6 @@
 using System.Security.Claims;
 
-namespace SampleApi.Infrastructure.Identity;
+namespace Mini.Infrastructure.Identity;
 
 public class IdentityContext : IIdentityContext
 {

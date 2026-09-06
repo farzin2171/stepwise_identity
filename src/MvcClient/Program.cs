@@ -1,11 +1,10 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.Extensions.Options;
+using Mini.Infrastructure.ExternalServices;
+using Mini.Infrastructure.Http;
 using MvcClient.Infrastructure.Configuration;
-using MvcClient.Infrastructure.Externals;
 using MvcClient.Infrastructure.MultiTenant;
-using Polly;
-using Polly.Extensions.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,7 +19,8 @@ builder.Services.Configure<ExternalServicesConfiguration>(builder.Configuration.
 // downstream. See Infrastructure/MultiTenant/ITenantContext.cs.
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 
-// Backs TokenClient's cache of service-account tokens — see Infrastructure/Externals/TokenClient.cs.
+// Backs TokenClient's cache of service-account tokens — see
+// Mini.Infrastructure/ExternalServices/TokenClient.cs.
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<ITokenClient, TokenClient>();
 
@@ -28,17 +28,14 @@ builder.Services.AddSingleton<ITokenClient, TokenClient>();
 // (Infrastructure/Http/ServiceCollectionExtensions.cs there) — applied here to both named clients this
 // app uses. A transient failure gets retried with exponential backoff; enough consecutive failures trip
 // the breaker and fail fast instead of piling up slow, doomed requests against a service that's down.
-static IAsyncPolicy<HttpResponseMessage> RetryPolicy() =>
-    HttpPolicyExtensions.HandleTransientHttpError()
-        .WaitAndRetryAsync(2, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)));
-
-static IAsyncPolicy<HttpResponseMessage> CircuitBreakerPolicy() =>
-    HttpPolicyExtensions.HandleTransientHttpError()
-        .CircuitBreakerAsync(3, TimeSpan.FromSeconds(30));
+//
+// Phase 10: the two policy methods that used to be declared here are now
+// Mini.Infrastructure.Http.ResiliencePolicies, because IdentityServerHost/Program.cs had declared its
+// own byte-identical copies. See that file for why one copy beats two.
 
 // Named client for calling SampleApi. Base address now comes from ExternalServicesApi's
 // ServiceDefinitions["SampleApi"] instead of being hardcoded here — see
-// Infrastructure/Configuration/ExternalServicesConfiguration.cs. HomeController attaches a Bearer token
+// Mini.Infrastructure/ExternalServices/ExternalServicesConfiguration.cs. HomeController attaches a Bearer
 // to every request made through this client (either the signed-in user's own token, or a service-account
 // token from ITokenClient — see Controllers/HomeController.cs for both).
 builder.Services.AddHttpClient("SampleApi", (services, client) =>
@@ -47,15 +44,15 @@ builder.Services.AddHttpClient("SampleApi", (services, client) =>
            var serviceDefinition = externalServices.GetServiceDefinition("SampleApi");
            client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
        })
-       .AddPolicyHandler(RetryPolicy())
-       .AddPolicyHandler(CircuitBreakerPolicy());
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 
 // Named client for TokenClient's client-credentials requests to IdentityServerHost's /connect/token.
 // Same resilience treatment as SampleApi — a flaky token endpoint is just as much a "this call might
 // transiently fail" situation as a flaky downstream API.
 builder.Services.AddHttpClient("token")
-       .AddPolicyHandler(RetryPolicy())
-       .AddPolicyHandler(CircuitBreakerPolicy());
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 
 builder.Services.AddAuthentication(options =>
        {
@@ -182,5 +179,11 @@ app.UseMiddleware<TenantResolutionMiddleware>();
 app.UseAuthorization();
 
 app.MapDefaultControllerRoute();
+
+// Phase 10: an unauthenticated liveness probe, so run-all.ps1 can tell "this process is listening and
+// finished starting" from "this port is open but the app is still warming up." Deliberately the plainest
+// thing that answers that question — the real services use DIT.HealthChecks, which additionally reports
+// on each dependency (database, downstream service) and is what an orchestrator scrapes.
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
 
 app.Run();

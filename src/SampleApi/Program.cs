@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-using SampleApi.Infrastructure.Identity;
+using Mini.Infrastructure.Identity;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -39,7 +39,7 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("ApiScope", policy => policy.RequireClaim("scope", "api1"));
 });
 
-// Port of Services.Authorization's IIdentityContext — see Infrastructure/Identity for the
+// Port of Services.Authorization's IIdentityContext — see Mini.Infrastructure/Identity for the
 // comparison to the real DIT.Identity library this was ported from.
 builder.Services.AddScoped<IIdentityContext, IdentityContext>();
 
@@ -117,10 +117,16 @@ api.MapGet("/identity", (HttpContext ctx, IIdentityContext identityContext) => R
 // would have cleared. Deliberately has no .RequireAuthorization() call: ServiceAccountOnlyFilter
 // alone decides both "is there a caller at all" (401) and "is that caller a service account" (403),
 // exactly like the real ServiceAccountAuthorizeFilter it was ported from — see
-// Infrastructure/Identity/ServiceAccountOnlyFilter.cs.
+// Mini.Infrastructure/Identity/ServiceAccountOnlyFilter.cs.
 api.MapDelete("/admin/cache/{tenantKey}", (string tenantKey) => Results.Ok(new
 {
     message = $"Cache cleared for tenant '{tenantKey}' (simulated — this sample has no real cache)."
 })).AddEndpointFilter<ServiceAccountOnlyFilter>();
+
+// Phase 10: an unauthenticated liveness probe, so run-all.ps1 can tell "this process is listening and
+// finished starting" from "this port is open but the app is still warming up." Deliberately the plainest
+// thing that answers that question — the real services use DIT.HealthChecks, which additionally reports
+// on each dependency (database, downstream service) and is what an orchestrator scrapes.
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
 
 app.Run();

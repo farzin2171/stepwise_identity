@@ -20,7 +20,7 @@ there's also one combined list at the end for anything cut entirely.
 
 ## 1. `IIdentityContext` — claims-only multi-tenancy, for a caller with no browser
 
-`Infrastructure/Identity/IIdentityContext.cs` + `IdentityContext.cs`:
+`Mini.Infrastructure/Identity/IIdentityContext.cs` + `IdentityContext.cs` (moved there in Phase 10):
 
 ```csharp
 public interface IIdentityContext

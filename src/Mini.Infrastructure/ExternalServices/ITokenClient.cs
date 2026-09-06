@@ -1,6 +1,5 @@
-using MvcClient.Infrastructure.Configuration;
 
-namespace MvcClient.Infrastructure.Externals;
+namespace Mini.Infrastructure.ExternalServices;
 
 // Apply counterpart: Equisoft.Apply.Data/Externals/Clients/ITokenClient.cs.
 public interface ITokenClient

@@ -14,7 +14,9 @@ actually is under all its production scaffolding.
 6. Data ingestion / config tooling ✓
 7. DIT external-service calls (TenantClient, UserClient) ✓
 8. Signing-key management (Key Vault instead of a developer credential) ✓
-9. IdentityProviderStore (DB-persisted external-provider config) ← next
+9. IdentityProviderStore (DB-persisted external-provider config) ✓
+10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
+11. Mini.UserService (a real service replaces ExternalServicesStub) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -720,9 +722,10 @@ for the exact steps.
 
 ### What's deliberately still missing
 
-- **No custom `IdentityProviderStore`.** `ExternalProviders` is still
-  `appsettings.json`-only — the real IdG persists this in SQL too. Planned for a future
-  phase (see the roadmap).
+- ~~**No custom `IdentityProviderStore`.**~~ Resolved in Phase 9 — external providers can
+  now come from the `IdentityProviders` table as well as `appsettings.json`, through the
+  same `IAuthenticationOptions` interface. `appsettings.json` still wins a scheme-name
+  collision, on purpose.
 - ~~**`AddDeveloperSigningCredential()` is still a throwaway key on disk.**~~ Resolved
   in Phase 8 — `KeyManagement:Provider: "AzureKeyVault"` swaps in a real Key Vault-backed
   key. Still the default here, on purpose.
@@ -1052,6 +1055,395 @@ config isn't something any other `test-phaseN.ps1` does either.
   — it has none either, relying on the Azure SDK's own built-in retry behavior (visible
   in the "four retries" trace above).
 
+## Phase 9 — `IdentityProviderStore` (external providers from the database)
+
+Phase 4 made external providers config-driven, and every phase since has said the same
+thing in its "deliberately missing" list: `ExternalProviders` is still
+`appsettings.json`-only. `Program.cs` said it too, in a comment on the store registration
+— *"no custom `IClientStore`/`IResourceStore` (it doesn't have those either; only a custom
+`IdentityProviderStore`, not yet ported here)."* This phase ports exactly that one thing.
+
+The problem it solves is onboarding. Adding a tenant's SSO today means editing
+`appsettings.json` and restarting the process. That's fine for `acme`, whose provider was
+known when the app was written; it's not fine for a carrier who signs a contract on a
+Tuesday. Duende calls the alternative **dynamic providers**: schemes that don't exist at
+startup, resolved from storage on the request that needs them.
+
+### The seam that makes it work
+
+The whole port hinges on one interface this sample already had. `IAuthenticationOptions`
+(Phase 4) is implemented by `BaseAuthenticationOptions` — the POCO the options binder
+fills from `appsettings.json`. Phase 9 adds a second implementer:
+
+```csharp
+public abstract record BaseIdentityProvider : IdentityProvider, IAuthenticationOptions
+{
+    string IAuthenticationOptions.Name => Scheme;
+    string IAuthenticationOptions.DisplayName => DisplayName ?? Scheme;
+
+    public string EcosystemTenant => this["EcosystemTenant"] ?? string.Empty;
+    // FederatedConfiguration, ClaimMappings — same, read out of the Properties bag
+}
+```
+
+`IdentityProvider` is Duende's database row: `Scheme`, `DisplayName`, `Type`, `Enabled`,
+and a free-form string-to-string `Properties` bag reached through `this["Key"]`. The
+strongly-typed properties are just readers over that bag. So `AccountController` and
+`AuthenticationHelper` keep working against `IAuthenticationOptions` and never learn which
+source a given provider came from.
+
+The cost of the bag is worth stating plainly: a typo in a property name yields `null`, not
+an error. `"Authorty"` instead of `"Authority"` produces a provider that fails at redirect
+time with a message about an empty authority. The real IdG lives with this too.
+
+### The custom store is four lines that matter
+
+```csharp
+public class IdentityProviderStore(...)
+    : Duende.IdentityServer.EntityFramework.Stores.IdentityProviderStore(...)
+{
+    protected override IdentityProvider MapIdp(Entities.IdentityProvider idp) => idp.Type switch
+    {
+        IdentityProviderTypes.OpenIdConnect => new OpenIdConnectProvider(idp.ToModel()),
+        _ => throw new Exception($"...The type '{idp.Type}' is not supported")
+    };
+}
+```
+
+Note what it doesn't do: no querying, no caching, no enabled/disabled handling. All of
+that is Duende's. Overriding the *mapper* rather than reimplementing the store is the
+smallest hook that turns a row into a type the application understands. Duende's own base
+returns a generic `OidcProvider`, which would silently discard `EcosystemTenant` and every
+other custom property.
+
+Registration mirrors the real IdG exactly, including the split:
+
+```csharp
+    .AddIdentityProviderStore<IdentityProviderStore>();   // always
+
+if (builder.Configuration.GetValue<bool>("DynamicIdentityProviderEnabled"))
+{
+    identityServerBuilder.AddDynamicIdentityProviders();  // flag-gated
+}
+```
+
+### Comparison against the real IdG
+
+| | Real IdG | This sample |
+| --- | --- | --- |
+| Store | `IdentityServer/EntityFramework/Stores/IdentityProviderStore.cs` | Same class, same override, same error message |
+| Base model | `IdentityServer/Models/BaseIdentityProvider.cs`, a `class` | A `record` — see the gotcha below |
+| Provider types | 5: `openidconnect`, `azureadb2c`, `azuread`, `saml`, `guest` | 1: `openidconnect` |
+| Type registration | `AdditionalExtensions.AddDynamicIdentityProviders()` | `Configurations/Extensions/DynamicIdentityProviderExtensions.cs`, same shape |
+| Feature flag | `DynamicIdentityProviderEnabled` in `Startup.cs` | Same name, same placement |
+| JSON in the bag | Newtonsoft | `System.Text.Json` — one fewer dependency |
+| Which providers a tenant sees | Client's `IdentityProviderRestrictions` **plus** a client property named after the tenant holding an ordered, comma-separated scheme list | The provider's own `EcosystemTenant`, same as Phase 4's file-based path |
+| Ingestion | `config/identityProviders.json` via the DataIngestionTool | An `identityProviders` array in `IdentityServerConfig.json` via `ConfigIngestionTool` |
+
+### Where this sample simplifies
+
+- **Tenant filtering is a different design, not a smaller one.** The real IdG never asks
+  a provider which tenant it belongs to when building the login page; it asks the
+  *client* which schemes this tenant may use, and gets ordering for free from the
+  comma-separated list. This sample filters on the provider's own `EcosystemTenant`,
+  which is Phase 4's model extended to a second source. The real approach also lets two
+  tenants share one provider — this one can't.
+- **Filtering by tenant costs one read per enabled scheme.** `GetAllSchemeNamesAsync`
+  returns names and enabled flags only; `EcosystemTenant` lives in the `Properties` bag,
+  so finding it means loading each provider. That's fine for one row and wrong for a
+  hundred. The real IdG's client-property approach avoids it entirely — another reason
+  its design isn't merely a fancier version of this one.
+- **Config wins a scheme-name collision, and says so.** A database row with the same
+  scheme as a configured provider is skipped with a warning. The real IdG gets the same
+  precedence structurally, by checking each config list before falling back to the store.
+- **Only `openidconnect`.** `saml` and `guest` need their own authentication handlers;
+  `azuread`/`azureadb2c` need protocol-specific behavior this sample doesn't have. See
+  `Models/Constants/IdentityProviderTypes.cs`.
+
+### The Initech tenant, and what it does and doesn't prove
+
+The new provider belongs to a third tenant, `initech`, which has no local test user and
+no `ExternalProviders` entry. If its login page offers an external option, that option can
+only have come from the `IdentityProviders` table. `acme` (file-based) and `globex` (none)
+are untouched, which is why `test-phase4.ps1` still passes unmodified.
+
+Be honest about the limit: onboarding Initech still required a code change, because
+`Tenants.DisplayNames` is a hardcoded dictionary (Phase 3's design). What moved into the
+database is the *provider* configuration, not the tenant.
+
+### Things that broke, and why they're worth knowing
+
+1. **`IdentityProvider` is a `record` in Duende 8** — `CS8865: Only records may inherit
+   from records`. The real IdG declares `BaseIdentityProvider` as a `class` because it
+   runs an older Duende. Nothing in this sample depends on the difference, but records
+   bring value equality: two providers built from the same row now compare equal where
+   the real IdG's would not.
+
+2. **The base store's constructor changed.** Duende 8 takes
+   `(IConfigurationDbContext, ILogger<...>, IIdentityProviderFactory)`, not the real IdG's
+   `ICancellationTokenProvider`. `MapIdp` survives as the extension point, so the port
+   still works — but a line-for-line copy doesn't compile, which is exactly why the phase
+   conventions say to verify the counterpart's shape rather than trust a copy.
+
+3. **`AddSingleton<IAuthenticationHelper>` became a startup crash.** `AuthenticationHelper`
+   took a dependency on `IIdentityProviderStore`, which Duende registers *scoped* because
+   it wraps a `DbContext`. A singleton holding a scoped dependency is a captive dependency
+   and the container refuses it outright. Fixed by making the helper scoped — the right
+   answer, but note the direction of the surprise: adding a read to an existing class
+   changed that class's required lifetime.
+
+4. **The interface had to become async, and it rippled.**
+   `GetAllAvailableIdentityProviders` became `GetAllAvailableIdentityProvidersAsync`,
+   which forced three `AccountController` call sites and turned a synchronous
+   `Login(string)` action into an async one. A synchronous interface is a bet that no
+   future implementation will need I/O; this phase collected on that bet. Duende 8 also
+   makes `CancellationToken` *required* on both store methods, so it threads all the way
+   up.
+
+5. **A renamed scheme left a stale row behind, and it nearly broke Phase 4.** The scheme
+   was initially `globex-external-idp`; renaming it to `initech-external-idp` and
+   re-ingesting produced **two** rows, because `ConfigIngestionTool` only replaces keys
+   present in the file and never deletes ones that aren't — a simplification its own
+   comments already warned about. The stale row silently gave Globex an external login
+   option and would have failed `test-phase4.ps1`'s first assertion. Verify with:
+
+   ```
+   sqlcmd -S "(localdb)\mssqllocaldb" -d MiniIdG -Q "SELECT Scheme, Type, Enabled FROM IdentityProviders;"
+   ```
+
+   This is the strongest argument yet for the "full sync" behavior the ingestion tool
+   doesn't have.
+
+6. **Adding a tenant meant editing two processes.** `Tenants.cs` (IdentityServerHost) and
+   the `tenantsByKey` dictionary in `ExternalServicesStub`. Miss the second and the login
+   *succeeds* — the failure surfaces later, as a 404 out of `TenantClient` during token
+   issuance, which reads like a broken external service rather than a missing row. That's
+   the cost of two registries agreeing by convention instead of sharing a table, and it's
+   exactly what the stub's own comment predicts.
+
+7. **The dynamic callback URL is not yours to choose.** A file-based provider uses whatever
+   `CallbackPath` you configure. A dynamic one is served at `/federation/{scheme}/signin`,
+   derived from the scheme name — so renaming a scheme in the database silently changes the
+   redirect URI the external IdP must have registered. `ExternalIdp` needed a second client
+   (`mini-idg-host-initech`) with exactly that URI.
+
+### Verifying it
+
+[`test-phase9.ps1`](../../test-phase9.ps1) proves the row becomes a login button, that
+`acme` and `globex` are unaffected, that a full federated login completes through
+`/federation/initech-external-idp/`, and that the resulting token carries `name` from
+ExternalIdp and `tenant_id=initech` from the original request.
+
+Run `ExternalIdp` (5011), `IdentityServerHost` (5001), `ExternalServicesStub` (5012) and
+`SampleApi` (5007), and run `ConfigIngestionTool` once so the row exists.
+
+### What's deliberately still missing
+
+- **No management API for providers.** Rows arrive only through `ConfigIngestionTool`.
+  The real system has admin endpoints; CRUD teaches nothing this sample doesn't show.
+- **No caching.** Duende ships `CachingIdentityProviderStore`; every login page render
+  here re-reads the table. Deliberate — Phase 7 already has one cache with a
+  deliberately-planted bug, and a second one would muddy that lesson.
+- **Secrets in plaintext in the `Properties` bag.** `ClientSecret` sits unencrypted in the
+  ingestion file and the database — and so does the real `config/identityProviders.json`.
+  Reproduced honestly rather than quietly improved, because it's a real property of the
+  system this course is teaching.
+- **`FederatedConfiguration` and `ClaimMappings` are still modeled but unconsumed** — now
+  from two sources instead of one.
+
+### Try it yourself
+
+Set `"DynamicIdentityProviderEnabled": false` in `appsettings.Development.json` and restart.
+Initech's login page loses its button — the store is still registered and the row is still
+there, but nothing reads it. Then set it back to `true` and, instead, flip the row's
+`Enabled` column to `0` directly in SQL. Same visible result, no restart needed. Two very
+different mechanisms, one indistinguishable outcome — which is which when you're debugging
+a carrier reporting "our SSO button vanished"?
+
+## Phase 10 — extracting `Mini.Infrastructure`
+
+Nine phases of building one project at a time left the same concerns implemented more than
+once. This phase's job was to find the genuine duplicates and extract them into
+[`src/Mini.Infrastructure`](../Mini.Infrastructure) — and, more importantly, to find out
+which of the apparent duplicates weren't duplicates at all.
+
+No features. The measure of success is that all six earlier verification scripts pass
+**unmodified**.
+
+### What looked duplicated
+
+Three things had the same names in different projects:
+
+- `TenantContext` — in `IdentityServerHost/` and in `MvcClient/Infrastructure/MultiTenant/`
+- `TenantResolutionMiddleware` — same two places
+- `Tenants` — same two places
+
+...plus `SampleApi`'s `IIdentityContext`, which is a third variation on "who is this
+request for."
+
+### What was actually shared, and got extracted
+
+| Moved to `Mini.Infrastructure` | From | Why it's genuinely shared |
+| --- | --- | --- |
+| `Http/ResiliencePolicies` | both `Program.cs` files | byte-identical copies |
+| `Identity/IIdentityContext`, `IdentityContext`, `IdentityType`, `IdentityContextMiddleware`, `ServiceAccountOnlyFilter` | SampleApi | every API in this repo needs "who is calling"; two more arrive in Phases 11 and 14 |
+| `ExternalServices/ITokenClient`, `TokenClient`, `ServiceAccount`, `ServiceDefinition`, `ExternalServicesConfiguration` | MvcClient | Phase 11 needs the same service-account token client in IdentityServerHost |
+
+The resilience policies are the clearest case, and the comment that used to sit above them
+in `IdentityServerHost/Program.cs` gives the game away:
+
+> Same Polly retry + circuit-breaker shape MvcClient already established for its own
+> external calls (Program.cs there) — reused verbatim rather than reinvented.
+
+"Reused verbatim" was generous. They were copied. Two copies of a retry policy is the
+textbook drift problem: change the retry count in one and nothing fails, so nobody finds
+out until two services behave differently under load.
+
+### What was NOT extracted, and why that's the real finding
+
+This is the part worth reading. `CONTEXT.md` asserted that the two `TenantContext`s were
+different concepts that "don't share code or a type." That was an assertion. This phase
+tested it, and **the assertion survived**:
+
+| | IdentityServerHost | MvcClient |
+| --- | --- | --- |
+| Resolved from | `acr_values=tenant:<name>` (query string) | the `tenant_id` **claim** |
+| Resolved when | **before** authentication | **after**; needs `IsAuthenticated` |
+| Answers | which tenant this login *attempt* is for | which tenant the signed-in user *is in* |
+| No tenant means | normal — `test-phase3.ps1` §4 asserts a login with no tenant hint still succeeds | a 401, via `RequireTenantAttribute` |
+| Shape | mutable `TenantKey` + `DisplayName` | one-time `SetTenant(Tenant)`, `Tenant` get-only |
+
+They sit on opposite sides of the authentication boundary and *disagree about whether "no
+tenant" is an error*. Merging them means inventing a type whose invariants neither caller
+holds. Same for the two `TenantResolutionMiddleware`s, which share nothing but a name.
+
+The two `Tenants` registries stay separate for a different and stronger reason —
+MvcClient's own file already said it:
+
+> deliberately a SEPARATE registry from IdentityServerHost's own `Tenants.cs` [...] in the
+> real system, Apply's Tenants table and the IdG's tenant registry are two independent
+> stores, kept in sync by an ops process, not by sharing code — a mismatch between them
+> [...] is a real, meaningful failure mode this sample can now actually reproduce.
+
+Sharing them would make a real production failure mode *unrepresentable*. The full
+write-up, including `IdentityGatewayConfiguration` and IdentityServerHost's
+`ExternalServicesOptions` (both of which also stay put), is in
+[`Mini.Infrastructure/README.md`](../Mini.Infrastructure/README.md).
+
+The lesson generalises: **shared names are not shared concepts, and the test is whether the
+two callers agree on the invariants** — not whether the fields line up.
+
+### Comparison against the real system
+
+| | Real system | This sample |
+| --- | --- | --- |
+| Where shared plumbing lives | `Libraries.Infrastructure`, ~26 NuGet packages (`DIT.Identity`, `DIT.HTTP`, `DIT.WebApi`, …) | one `Mini.Infrastructure` csproj, folders not packages |
+| How consumers get it | `PackageReference` + `AddDigitalInsuranceTools(...).AddX()` | `ProjectReference`, plain DI registration |
+| Resilience config | `DIT.HTTP` binds retry counts and breaker thresholds per named client from `appsettings` | hardcoded in `ResiliencePolicies` |
+| Identity context | `DIT.Identity` models four caller kinds (User, Service, Guest, OnBehalfOf) and reads explicit `service_isService` / `service_tenant` claims | two kinds; infers Service from the *absence* of `sub` |
+| Health checks | `DIT.HealthChecks`, reporting per-dependency status | one `/health` returning `{ status = "healthy" }` |
+
+For *why* the real libraries are built the way they are — the builder-extension pattern,
+options binding, the provider switch — see the DIT library course at
+`C:\MyWork\MyLearning\EqusoftInfra` (Series 2 for `DIT.Identity`, Series 9 for `DIT.HTTP`).
+This repo deliberately doesn't re-explain library internals; see
+[`Mini.Infrastructure/README.md`](../Mini.Infrastructure/README.md) for that division of
+labour.
+
+### Where this sample simplifies
+
+- **One csproj, not four.** The real `DIT.Connectors` splits Data/Domain/HTTP/AspNetCore to
+  enforce a dependency direction. `Mini.Infrastructure` gets split only when a phase forces
+  it — and that would be a "things that broke" entry, not a silent refactor.
+- **No `AddMiniInfrastructure()` builder extension.** Consumers register what they use, by
+  hand. The real libraries' fluent builder is a big part of what EqusoftInfra teaches, and
+  duplicating it here would be writing that lesson twice.
+- **`/health` reports nothing about dependencies.** It answers "is this process listening
+  and finished starting," which is all `run-all.ps1` needs.
+
+### Things that broke, and why they're worth knowing
+
+1. **A class library doesn't get the web SDK's implicit usings.** `IdentityContextMiddleware`
+   and `ServiceAccountOnlyFilter` compiled fine inside SampleApi and immediately failed with
+   five `CS0246`s (`RequestDelegate`, `HttpContext`, `IEndpointFilter`,
+   `EndpointFilterInvocationContext`, `EndpointFilterDelegate`) once moved. `FrameworkReference
+   Include="Microsoft.AspNetCore.App"` makes the *types* available; the `Microsoft.NET.Sdk`
+   implicit-usings set doesn't include the ASP.NET Core namespaces the way `Microsoft.NET.Sdk.Web`
+   does. Fixed with explicit `using Microsoft.AspNetCore.Http;`. Moving ASP.NET Core code out of
+   a web project always costs this.
+
+2. **I wrote `run-all.ps1` excluding `ExternalServicesStub`, and that was wrong.** The plan for
+   this arc said the stub should drop out of the default startup set as a superseded artifact.
+   At Phase 10 it isn't superseded yet — `Mini.UserService` doesn't exist until Phase 11, and
+   IdentityServerHost still calls the stub during token issuance, so *no login succeeds without
+   it*. A plan written several phases ahead can be right about the destination and wrong about
+   the timing.
+
+3. **`git mv` matters more than it looks.** Moving files with `mv` and re-adding them makes git
+   record a delete plus an add, which loses the history on files whose comments are half the
+   value here. `git mv` preserves it and keeps `git log --follow` working.
+
+4. **Alphabetical using order isn't cosmetic when you script the edit.** `sed`-inserting
+   `using Mini.Infrastructure.ExternalServices;` put it after `Microsoft.Extensions.Options`
+   in one file and before it in another. `Mic` sorts before `Min`, so it belongs after every
+   `Microsoft.*` and before `MvcClient.*`. Worth fixing rather than shrugging at: a
+   consistently-ordered list is one where a human notices an unexpected entry.
+
+5. **`run-all.ps1` makes `dotnet build` fail, and the error doesn't say so.** A running host
+   holds a lock on its own `bin/Debug/net10.0/<Project>.exe`, so rebuilding while it's up
+   produces `MSB3027`/`MSB3021` — "the file is locked by: MvcClient (8904)" — which reads like
+   a broken build rather than "you left the app running." Run `.\run-all.ps1 -Stop` first.
+   This is why the script writes its pid file *before* waiting for health: a service that
+   never came up still needs stopping before the next build.
+
+6. **The move left stale paths in four docs and three code comments.** Comments like
+   "see `Infrastructure/Externals/TokenClient.cs`" and doc headings naming
+   `Infrastructure/Identity/IIdentityContext.cs` all pointed at directories that no longer
+   exist. Nothing failed — stale cross-references never do, which is exactly why they
+   accumulate. Grepping for the old paths after a move is cheap; noticing them six months
+   later is not.
+
+### Verifying it
+
+[`test-phase10.ps1`](../../test-phase10.ps1) covers the five `/health` endpoints and proves the
+moved code behaves identically: `IIdentityContext` still tells a user from a service account
+(and still infers the latter from a missing `sub`), `ServiceAccountOnlyFilter` still answers
+200/403/401 for service/user/anonymous, and per-tenant service accounts still resolve to their
+own tenants.
+
+But the real regression suite is everything that came before. All six pass unmodified:
+`test-phase2`, `test-phase3`, `test-phase4`, `test-phase7`, `test-phase9`, `test-api`.
+
+Start everything with [`run-all.ps1`](../../run-all.ps1) — one command instead of five
+terminals, and it runs `ConfigIngestionTool` in the right order first.
+
+### What's deliberately still missing
+
+- **The tenant-registry drift is real and left in place.** Phase 9 added `initech` to
+  IdentityServerHost's `Tenants.cs` and to `ExternalServicesStub`, but not to MvcClient's. An
+  Initech user can log in at `:5001` and then get a 401 from MvcClient's `RequireTenantAttribute`,
+  because MvcClient's registry has never heard of them. Not a bug to fix — it is exactly the
+  ops-reconciliation failure the design reproduces, now visible in three files.
+- **`IdentityGatewayConfiguration` stays in MvcClient.** One project has that relationship; a
+  config class used by one project isn't shared code.
+- **IdentityServerHost's `ExternalServicesOptions` stays put.** Same config *section name* as
+  MvcClient's, genuinely different shape (self-issued JWT vs. real client credentials). Phase 11
+  converges them, and that's when it moves or dies.
+- **No tests for the moved code beyond behavioural ones.** Phase 10 added no branching decision
+  logic, so per the phase conventions it gets no xunit project. Phase 12 does.
+
+### Try it yourself
+
+Reproduce the drift on purpose. Add a fourth tenant to `IdentityServerHost/Tenants.cs` and
+`ExternalServicesStub`'s `tenantsByKey` — but *not* to `MvcClient/Infrastructure/MultiTenant/Tenants.cs`
+— then ingest a database identity provider for it (Phase 9's mechanism) and log in through
+MvcClient. The login succeeds at `:5001` and then fails at `:5006`, with nothing in either app's
+logs saying "these registries disagree."
+
+Then ask the harder question: which of the three registries should be authoritative, and what
+would it cost to make it so? That's the design question Phase 11's database-per-service split
+starts to answer.
+
 ## Running it
 
 0. **Prerequisites.**
@@ -1179,6 +1571,14 @@ config isn't something any other `test-phaseN.ps1` does either.
 
 ## What's deliberately missing (and why)
 
+- **The same plumbing exists three times over.** `TenantContext`,
+  `TenantResolutionMiddleware` and `Tenants` live independently in both
+  `IdentityServerHost` and `MvcClient/Infrastructure/`, and `SampleApi`'s
+  `IIdentityContext` is a third variation on the same idea. Each was written for its own
+  phase and none knows about the others. Phase 10 extracts them into
+  `Mini.Infrastructure` — and the extraction is itself the test of a claim `CONTEXT.md`
+  currently makes by assertion: that the two `TenantContext`s are genuinely different
+  concepts rather than one abstraction with two resolvers.
 - **Real business data or logic behind the API.** SampleApi has exactly one endpoint
   that echoes claims — it exists to prove token validation works, not to be a real
   service. Also see its own README for its list of "deliberately missing."

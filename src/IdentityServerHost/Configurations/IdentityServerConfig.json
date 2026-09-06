@@ -55,5 +55,22 @@
       "allowedGrantTypes": [ "client_credentials" ],
       "allowedScopes": [ "api1" ]
     }
+  ],
+
+  "identityProviders": [
+    {
+      "scheme": "initech-external-idp",
+      "displayName": "ExternalIdp (Initech SSO, from the database)",
+      "type": "openidconnect",
+      "enabled": true,
+      "properties": {
+        "EcosystemTenant": "initech",
+        "Authority": "https://localhost:5011",
+        "ClientId": "mini-idg-host-initech",
+        "ClientSecret": "external-secret-initech",
+        "GetClaimsFromUserInfoEndpoint": "true",
+        "FederatedConfiguration": { "Enabled": true }
+      }
+    }
   ]
 }
