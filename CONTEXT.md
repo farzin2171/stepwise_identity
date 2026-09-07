@@ -62,13 +62,17 @@ has no counterpart here.
 **Tenant registry**:
 A per-application store of which tenants exist. There are **three**, and they share no
 code, table, or type: `IdentityServerHost/Tenants.cs` (key → display name),
-`MvcClient/Infrastructure/MultiTenant/Tenants.cs` (key → `Tenant`), and
-`ExternalServicesStub`'s `tenantsByKey` (key → GUID). They agree only by convention,
-mirroring the real system, where Apply's `Tenants` table and the IdG's registry are
-independent stores reconciled by an ops process.
+`MvcClient/Infrastructure/MultiTenant/Tenants.cs` (key → `Tenant`), and — as of Phase 11 —
+`Mini.UserService`'s `Tenants` **table** (key → GUID, name, `IsActive`). They agree only by
+convention, mirroring the real system, where Apply's `Tenants` table and the IdG's registry
+are independent stores reconciled by an ops process.
 
 The drift is currently live and deliberate: `initech` (Phase 9) exists in two of the three,
 so an Initech user can log in at IdentityServerHost and then be rejected by MvcClient.
+
+Phase 11 made it **asymmetric** as well as live: the third registry can now be written over
+HTTP (`POST /api/v1/management/tenants`) with no code edit and no restart, while the other two
+still need a source change and a redeploy. Before, all three drifted at the same slow speed.
 _Avoid_: "the tenant list" — there isn't one.
 
 **Tenants.cs**:
@@ -130,18 +134,39 @@ entry — its only way in is a database-backed provider, which makes it the cont
 proving a row alone can produce a working federated login. `acme` (file-based providers)
 and `globex` (none) keep their Phase 4 behavior untouched.
 _Avoid_: treating it as evidence that tenant onboarding is codeless — `Tenants.DisplayNames`
-is still a hardcoded dictionary, and `ExternalServicesStub` needed its own matching entry.
+is still a hardcoded dictionary. Phase 11 changed only the third registry: a NEW tenant's row
+in `Mini.UserService` can now be created over HTTP, but its display name still needs a code
+edit and a redeploy.
 
 **Service account**:
-A client-credentials-grant client (e.g. `mvcclient-svc.acme`), one per tenant, for
+A client-credentials-grant client (e.g. `mvcclient-svc.acme`), usually one per tenant, for
 server-to-server calls with no user or browser involved — ported from `Apply`'s pattern.
-_Avoid_: "service client," "machine user."
+
+Phase 11 added four: `userservice-svc.{acme,globex,initech}` (Mini.UserService calling back into
+IdentityServerHost) and `userservice-mgmt-svc` (writing to Mini.UserService's management API).
+The last one has NO tenant suffix, on purpose — creating a tenant is inherently cross-tenant,
+so `IIdentityContext` resolves its `TenantKey` to null. This sample's suffix convention cannot
+express "all tenants" as distinct from "none"; the real `DIT.Identity` reads an explicit
+`service_tenant` claim, which can simply be absent.
+_Avoid_: "service client," "machine user" — and don't use it for a self-issued JWT, which is a
+different mechanism entirely (see above).
 
 **IIdentityContext / IdentityType**:
-SampleApi's claims-only abstraction over "who is calling" — a `User` identity (has a
-`tenant_id` claim) vs. a `ServiceAccount` identity (tenant parsed from the `client_id`
-suffix instead) — ported from `Services.Authorization`.
-_Avoid_: "caller," "principal" alone.
+The claims-only abstraction over "who is calling" — a `User` identity (has a `sub`, tenant from
+the `tenant_id` claim) vs. a `Service` identity (no `sub`, tenant parsed from the `client_id`
+suffix instead) — ported from `Services.Authorization`, and in `Mini.Infrastructure/Identity`
+since Phase 10. Consumed by SampleApi and, since Phase 11, `Mini.UserService`.
+
+**Two types, three kinds of caller**, found in Phase 11 and left unfixed on purpose. A user, a
+registered service account, and IdentityServerHost issuing itself a token are three genuinely
+different callers, but the last two are indistinguishable here because both are identified by
+the *absence* of `sub`. So `ServiceAccountOnlyFilter`, which decides purely on `IdentityType`,
+cannot tell a revocable credential from a self-signed one — verified by pointing `UserClient`
+at Mini.UserService's `/api/v2/identity` diagnostic. The real `DIT.Identity` distinguishes
+caller kinds explicitly with a `service_isService` claim, and models four rather than two.
+`IdentityContextTests` pins the current, weaker behaviour so a later fix can't land silently.
+_Avoid_: "caller," "principal" alone — and don't read `IdentityType.Service` as "a registered
+service account," which is what it does not quite mean.
 
 **IdentityServerConfig.json**:
 The JSON file holding Clients/Resources/Scopes — config as data, not compiled code.
@@ -158,36 +183,89 @@ _Avoid_: "the seed step" — `SeedData` (IdentityServerHost) only migrates schem
 doesn't seed rows as of Phase 6.
 
 **TenantClient** / **UserClient** (IdentityServerHost):
-Ported in Phase 7. HTTP clients to `ExternalServicesStub`, authenticated with a
-self-issued JWT (`IIdentityServerTools.IssueClientJwtAsync`) rather than a registered
-OAuth client. `TenantClient.GetTenantAsync` resolves a tenant *key* ("acme") to its
+Ported in Phase 7. HTTP clients to `Mini.UserService` (`ExternalServicesStub` until
+Phase 11), authenticated with a self-issued JWT
+(`IIdentityServerTools.IssueClientJwtAsync`) rather than a registered OAuth client. `TenantClient.GetTenantAsync` resolves a tenant *key* ("acme") to its
 `tenant_guid` claim, cached forever on purpose (the real system's own bug, reproduced
 here). `UserClient.GetRoleAsync` resolves a `role` claim, never cached — the deliberate
 contrast. Both called from `SampleProfileService`, not a separate component — see
-`ExternalServicesStub` below.
+`Mini.UserService` below. Only the URL changed in Phase 11: same routes, same GUIDs, same
+fallback, so `test-phase7.ps1` passes unmodified against the replacement.
 _Avoid_: confusing this with `Tenants.cs` — that resolves *which* tenant a login is for
 (from `acr_values`); `TenantClient` only resolves *that* tenant's GUID, a separate,
 downstream, additive step.
 
 **tenant_guid**:
-The claim `TenantClient` adds, holding the GUID `ExternalServicesStub` resolved from the
+The claim `TenantClient` adds, holding the GUID `Mini.UserService` resolved from the
 `tenant_id` claim's key. Additive, not a replacement — `tenant_id` still holds the
 friendly key (Phase 3's shape), since MvcClient/SampleApi's tenant resolution both
 already depend on that shape.
 
 **role**:
-The claim `UserClient` adds, holding whatever `ExternalServicesStub` returns for a
+The claim `UserClient` adds, holding whatever `Mini.UserService` returns for a
 subject id — never cached. Exists purely to contrast with `tenant_guid`'s cached (and
 deliberately broken) lookup; not a real permissions/roles system.
 
 **ExternalServicesStub**:
-The stand-in for the real IdG's two sibling DIT microservices (Tenant Management API,
-User API), collapsed into one process. Validates the self-issued JWTs
-`TenantClient`/`UserClient` send by trusting IdentityServerHost's own signing key —
-nothing else to configure.
+Phase 7's stand-in for the real IdG's two sibling DIT microservices (Tenant Management API,
+User API), collapsed into one process, each route backed by a `Dictionary` literal. Validates
+the self-issued JWTs `TenantClient`/`UserClient` send by trusting IdentityServerHost's own
+signing key — nothing else to configure.
+
+**Superseded by `Mini.UserService` in Phase 11**, and kept — the reference case for this
+repo's rule that a replaced artifact stays in the tree and stays marked. Nothing calls it now
+(`ExternalServicesApi` points at `:5013`) and `run-all.ps1` starts it only with
+`-IncludeStub`.
 _Avoid_: confusing with `ExternalIdp` — that's a stand-in for an external *identity*
 provider (a login source); this is a stand-in for backend *data* services IdentityServerHost
 calls at token-issuance time, never involved in authentication itself.
+
+**Mini.UserService**:
+The Phase 11 replacement for `ExternalServicesStub` (`:5013`) — same two routes, same tenant
+GUIDs, same role fallback, backed by its own `MiniUsers` database. Still collapses the two
+real services into one process, but keeps their two JWT audiences (`tenantmgntapi`, `userapi`)
+as separate authorization policies, so the boundary two deployments would enforce is at least
+written down. Adds two things the stub had no version of: a service-account-gated management
+API (a tenant can be onboarded over HTTP, no code edit) and an outbound call back into
+IdentityServerHost.
+_Avoid_: "the user service" unqualified when the real `Services.User` is also in scope — and
+don't call it a port of `Services.User` alone, since half of it is `Services.TenantManagement`.
+
+**MiniUsers**:
+`Mini.UserService`'s own LocalDB database, separate from the `MiniIdG` that
+IdentityServerHost's three contexts share. The separation is the point of Phase 11: no other
+process has a connection string for it, so "database per service" is enforced by the absence
+of a credential rather than by convention.
+_Avoid_: assuming `MiniAuthorization` exists — it arrives with `Mini.AuthorizationService`,
+not in Phase 11, despite a Phase 10 note that said otherwise.
+
+**Identity conversion**:
+Translating between a local subject id (`external:{scheme}:{externalSubjectId}`) and the
+external provider's own subject id, in either direction — `convertTo=Local|External`. Ported
+in Phase 11 as `UserConversionController` plus the pure `IdentityConversion` decision table.
+Owned by IdentityServerHost because the mapping lives in its `UserDbContext`; *called* by
+`Mini.UserService`, which exposes the API and holds none of the data.
+
+The External→Local direction is genuinely ambiguous in this sample and answers 409: the
+composite string key means the lookup is a suffix match, and carol is `ext-1` at two
+providers. The real IdG stores provider and subject in separate columns and never hits this.
+_Avoid_: "user mapping" — and don't confuse it with `ExternalUserStore`'s *provisioning*,
+which writes the mapping; this only reads it.
+
+**Self-issued JWT**:
+A token IdentityServerHost mints for itself via `IIdentityServerTools.IssueClientJwtAsync` —
+signed with its own key, no `/connect/token` round trip, no registered client. Carries `iss`,
+`nbf`, `iat`, `exp`, `client_id`, `aud` and **nothing else** — in particular no `sub` and no
+`scope`.
+
+Confirmed in Phase 11, against a Phase 10 prediction that it would be replaced: it is the real
+IdG's actual pattern for reads, so it stays. The absence of `scope` is load-bearing — it's what
+lets Mini.UserService's management policies refuse a token that
+`ServiceAccountOnlyFilter` alone would accept, since the absent `sub` makes it read as a
+service account. See
+[`docs/architecture/service-to-service-auth.md`](docs/architecture/service-to-service-auth.md).
+_Avoid_: calling it a service-account token — the distinction (revocable vs not) is the whole
+reason both exist.
 
 **KeyManagement:Provider**:
 The config value (`"Developer"` or `"AzureKeyVault"`) `SigningKeyExtensions.AddSigningKey`

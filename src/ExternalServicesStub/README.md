@@ -1,5 +1,23 @@
 # ExternalServicesStub — a stand-in for two real DIT microservices
 
+> **Superseded in Phase 11 by [`Mini.UserService`](../Mini.UserService) (`:5013`).** Nothing calls this
+> any more: `IdentityServerHost`'s `ExternalServicesApi` config points at `:5013`, and `run-all.ps1`
+> no longer starts this project unless you pass `-IncludeStub`.
+>
+> **It is kept, not deleted**, and the reason is the point of a phase course: the value is the *diff*
+> between phases, and deleting the predecessor retroactively erases what Phase 7 taught. This is 60
+> lines with two `Dictionary` literals; its replacement is a service with a database, migrations, an
+> authenticated management API and an outbound call of its own. Reading them side by side is the
+> shortest available answer to "what does 'make it a real service' actually cost?"
+>
+> Start both and compare:
+>
+> ```powershell
+> .\run-all.ps1 -IncludeStub     # stub on :5012, Mini.UserService on :5013
+> ```
+>
+> Everything below describes this project as Phase 7 built it, and is left unchanged.
+
 The real IdG calls out to two sibling DIT microservices at token-issuance time — a
 Tenant Management API (`TenantClient.GetTenantAsync`) and a User API
 (`UserClient.GetRoleAsync`) — rather than owning that data itself. This project is a

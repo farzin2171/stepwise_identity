@@ -10,7 +10,22 @@
   ],
 
   "apiScopes": [
-    { "name": "api1", "displayName": "Sample API access" }
+    { "name": "api1", "displayName": "Sample API access" },
+
+    // Phase 11. The two audiences Mini.UserService serves — one per real service it stands in for
+    // (Services.TenantManagement, Services.User). Registered so a REAL client-credentials client can
+    // request them; the self-issued JWTs IdentityServerHost sends on the read path need no
+    // registration at all (IssueClientJwtAsync sets the audience directly), which is exactly why
+    // Phase 7 needed no config entry for "identityserverhost".
+    { "name": "tenantmgntapi", "displayName": "Tenant registry" },
+    { "name": "userapi", "displayName": "User identities and roles" },
+
+    // Phase 11. Duende's own reserved scope name for an API hosted INSIDE the IdentityServer process
+    // (IdentityServerConstants.LocalApi.ScopeName). Requesting it is what gets a token past
+    // Controllers/UserConversionController.cs's [Authorize(LocalApi.PolicyName)]. Deliberately has no
+    // apiResource: a standalone scope lands in Duende's default "{issuer}/resources" audience, and
+    // local-API validation checks the scope, not the audience.
+    { "name": "IdentityServerApi", "displayName": "Identity Gateway's own API" }
   ],
 
   "apiResources": [
@@ -19,6 +34,21 @@
       "displayName": "Mini IdG Sample API",
       "scopes": [ "api1" ],
       "userClaims": [ "name", "email", "tenant_id", "tenant_guid", "role" ]
+    },
+
+    // Phase 11. These exist so a token requesting the "tenantmgntapi" / "userapi" scope gets that name
+    // stamped into its "aud" claim, which is what Mini.UserService's two authorization policies
+    // require. Without an apiResource of the same name, the scope alone would produce the default
+    // "{issuer}/resources" audience and every management call would 403.
+    {
+      "name": "tenantmgntapi",
+      "displayName": "Tenant registry (Mini.UserService)",
+      "scopes": [ "tenantmgntapi" ]
+    },
+    {
+      "name": "userapi",
+      "displayName": "User identities and roles (Mini.UserService)",
+      "scopes": [ "userapi" ]
     }
   ],
 
@@ -54,6 +84,48 @@
       "clientSecret": "globex-svc-secret",
       "allowedGrantTypes": [ "client_credentials" ],
       "allowedScopes": [ "api1" ]
+    },
+
+    // Phase 11. Mini.UserService's own service accounts, for its OUTBOUND call back into this host
+    // (Controllers/UserConversionController.cs). One per tenant, because
+    // Mini.Infrastructure/ExternalServices/TokenClient.cs sends "{ClientId}.{tenantKey}" and looks the
+    // secret up per tenant — so revoking Initech's service-account access never touches Acme's. Real
+    // counterpart: Services.User's "ServiceAccounts:*" configuration.
+    //
+    // All three ask only for "IdentityServerApi" — Duende's local-API scope. That is the whole grant:
+    // these clients can convert user ids and nothing else. They cannot call SampleApi (no "api1") and
+    // they cannot write to Mini.UserService (no "tenantmgntapi"/"userapi").
+    {
+      "clientId": "userservice-svc.acme",
+      "clientSecret": "acme-userservice-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "IdentityServerApi" ]
+    },
+    {
+      "clientId": "userservice-svc.globex",
+      "clientSecret": "globex-userservice-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "IdentityServerApi" ]
+    },
+    {
+      "clientId": "userservice-svc.initech",
+      "clientSecret": "initech-userservice-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "IdentityServerApi" ]
+    },
+
+    // Phase 11. The service account that WRITES to Mini.UserService's management API — creating a
+    // tenant, assigning a role. Deliberately has no ".{tenant}" suffix, and that absence is worth
+    // noticing: creating a tenant is inherently cross-tenant, so there is no tenant to name. It means
+    // Mini.Infrastructure/Identity/IdentityContext.cs resolves TenantKey to null for this caller,
+    // because the suffix convention this sample uses to carry tenant on a service-account token has no
+    // way to say "all tenants" as distinct from "no tenant." The real DIT.Identity doesn't have that
+    // problem: it reads an explicit "service_tenant" claim, which can simply be absent.
+    {
+      "clientId": "userservice-mgmt-svc",
+      "clientSecret": "userservice-mgmt-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "tenantmgntapi", "userapi" ]
     }
   ],
 

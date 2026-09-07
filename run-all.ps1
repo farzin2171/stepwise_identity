@@ -9,18 +9,25 @@
 #   .\run-all.ps1              start everything, wait for health, leave it running
 #   .\run-all.ps1 -Stop        stop everything this script started
 #   .\run-all.ps1 -SkipIngest  skip ConfigIngestionTool (faster if config hasn't changed)
+#   .\run-all.ps1 -IncludeStub also start the superseded ExternalServicesStub on :5012
 #
-# ExternalServicesStub IS in the default set, and has to be: IdentityServerHost calls it during token
-# issuance (Phase 7), so no login succeeds without it. It leaves the default set in Phase 11, when
-# Mini.UserService takes over that call and the stub becomes a kept-but-superseded artifact serving only
-# test-phase7.ps1.
+# Phase 11: ExternalServicesStub has LEFT the default set, as Phase 10 predicted it eventually would.
+# Mini.UserService (:5013) took over the two calls IdentityServerHost makes during token issuance, and
+# IdentityServerHost's ExternalServicesApi config now points there — so the stub is no longer on any
+# path a login depends on. It is kept, not deleted (see src/ExternalServicesStub/README.md), and
+# -IncludeStub starts it for a side-by-side comparison against the service that replaced it.
+#
+# Note what did NOT change: test-phase7.ps1 still passes, unmodified, and now exercises
+# Mini.UserService instead of the stub. That is the actual proof the replacement is behaviour-
+# preserving — same routes, same tenant GUIDs, same role table, different implementation behind them.
 #
 # ReactSpa is not started: it's `npm run dev`, not `dotnet run`, and no test-phase*.ps1 drives
 # browser JavaScript. Start it by hand when you want to click through it.
 
 param(
     [switch]$Stop,
-    [switch]$SkipIngest
+    [switch]$SkipIngest,
+    [switch]$IncludeStub
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,12 +37,16 @@ $pidFile = Join-Path $root ".run-all.pids"
 # Port numbers must match each project's launchSettings.json — see the phase conventions skill's
 # "Known pre-existing gotcha" for why these drift and how to fix it when they do.
 $services = @(
-    @{ Name = "ExternalIdp";          Project = "src/ExternalIdp";          Url = "https://localhost:5011" }
-    @{ Name = "IdentityServerHost";   Project = "src/IdentityServerHost";   Url = "https://localhost:5001" }
-    @{ Name = "SampleApi";            Project = "src/SampleApi";            Url = "https://localhost:5007" }
-    @{ Name = "ExternalServicesStub"; Project = "src/ExternalServicesStub"; Url = "https://localhost:5012" }
-    @{ Name = "MvcClient";            Project = "src/MvcClient";            Url = "https://localhost:5006" }
+    @{ Name = "ExternalIdp";        Project = "src/ExternalIdp";        Url = "https://localhost:5011" }
+    @{ Name = "IdentityServerHost"; Project = "src/IdentityServerHost"; Url = "https://localhost:5001" }
+    @{ Name = "SampleApi";          Project = "src/SampleApi";          Url = "https://localhost:5007" }
+    @{ Name = "Mini.UserService";   Project = "src/Mini.UserService";   Url = "https://localhost:5013" }
+    @{ Name = "MvcClient";          Project = "src/MvcClient";          Url = "https://localhost:5006" }
 )
+
+if ($IncludeStub) {
+    $services += @{ Name = "ExternalServicesStub"; Project = "src/ExternalServicesStub"; Url = "https://localhost:5012" }
+}
 
 function Stop-All {
     if (-not (Test-Path $pidFile)) {

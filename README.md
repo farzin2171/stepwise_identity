@@ -22,7 +22,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 8. Signing-key management (Key Vault instead of a developer credential) ✓
 9. IdentityProviderStore (DB-persisted external-provider config) ✓
 10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
-11. Mini.UserService (a real service replaces ExternalServicesStub) ← next
+11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
+12. Connectors (per-tenant, cascading user sources) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -42,14 +43,23 @@ A mini Identity Gateway, built from scratch in phases that mirror
   tool: reads `IdentityServerHost/Configurations/IdentityServerConfig.json` and writes it
   into the same SQL Server database IdentityServerHost reads from. See its
   [README](src/Tools/ConfigIngestionTool/README.md).
-- [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's stand-in for two real
-  DIT microservices (a Tenant Management API and a User API) that IdentityServerHost
-  calls at token-issuance time. See its [README](src/ExternalServicesStub/README.md).
+- [src/Mini.UserService](src/Mini.UserService) — Phase 11's real service standing in for two
+  sibling DIT microservices (a Tenant Management API and a User API) that IdentityServerHost
+  calls at token-issuance time. Its own `MiniUsers` database, a service-account-gated
+  management API, and a call *back* into IdentityServerHost — the dependency is bidirectional,
+  as it is in production. See its [README](src/Mini.UserService/README.md).
+- [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's hardcoded-dictionary
+  version of the same thing, **superseded** in Phase 11 and kept for comparison, not deleted:
+  the value of a phase course is the diff between phases. `.\run-all.ps1 -IncludeStub` starts
+  both. See its [README](src/ExternalServicesStub/README.md).
 - [src/Mini.Infrastructure](src/Mini.Infrastructure) — Phase 10's shared plumbing, created
   by *extracting* what nine phases of building one project at a time had duplicated. Its
   [README](src/Mini.Infrastructure/README.md) is worth reading for what it deliberately
   does **not** contain: the two `TenantContext`s and the two tenant registries stay
   separate, because they turned out to be different concepts wearing the same names.
+- [tests/StepwiseIdentity.Tests](tests/StepwiseIdentity.Tests) — the repo's single xunit
+  project, added in Phase 11 when the first genuinely branching logic arrived. Decision
+  tables only; everything else is verified end to end by a `test-phase*.ps1`.
 
 **Start everything with [`run-all.ps1`](run-all.ps1)** (Phase 10) — one command instead of
 five terminals, running the config-ingestion step first and waiting for each `/health`
@@ -58,7 +68,10 @@ endpoint. `.\run-all.ps1 -Stop` shuts it all down.
 There's a current-state map of the whole system in
 [docs/architecture/](docs/architecture/README.md): who runs on which port, the four ways a
 token moves, where state lives, and the three tenant registries that agree only by
-convention. Unlike the phase-by-phase READMEs, it describes the system as it is *now*.
+convention. Unlike the phase-by-phase READMEs, it describes the system as it is *now*. It now
+also carries
+[service-to-service-auth.md](docs/architecture/service-to-service-auth.md) — the three ways a
+process proves who it is when there's no user involved, and which one can't be revoked.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -140,9 +153,12 @@ Verification scripts (repo root):
 - [`test-phase6.ps1`](test-phase6.ps1) — proves `Configurations/IdentityServerConfig.json`
   is authoritative: corrupts a client directly in the database, re-runs
   `ConfigIngestionTool`, and confirms both the row and a real login are restored.
-- [`test-phase7.ps1`](test-phase7.ps1) — proves `tenant_guid`/`role` resolve from
-  `ExternalServicesStub` via IdentityServerHost's own self-issued-JWT calls, and reach
-  both IdentityServerHost's and SampleApi's tokens.
+- [`test-phase7.ps1`](test-phase7.ps1) — proves `tenant_guid`/`role` resolve from the
+  external service via IdentityServerHost's own self-issued-JWT calls, and reach
+  both IdentityServerHost's and SampleApi's tokens. **Unmodified since Phase 7, and now
+  the regression test for Phase 11** — it was written against `ExternalServicesStub` and
+  exercises `Mini.UserService` instead, which is what makes "replacement" a claim rather
+  than a hope.
 - [`test-phase8.ps1`](test-phase8.ps1) — confirms the default developer signing key
   still works after adding the Key Vault code path, then prints manual steps for
   proving the `AzureKeyVault` provider is really wired up (see
@@ -157,8 +173,19 @@ Verification scripts (repo root):
   observable: five `/health` endpoints answer, `IIdentityContext` still tells a user from a
   service account, and `ServiceAccountOnlyFilter` still answers 200/403/401. The real
   regression suite for that phase is every script above it, run unmodified.
+- [`test-phase11.ps1`](test-phase11.ps1) — proves `Mini.UserService` replaced the stub without
+  changing behaviour, in eight parts: the registry now coming from SQL (with the GUID's *case*
+  pinned, after a real bug), the two collapsed services keeping separate audiences, a tenant
+  onboarded over HTTP with no restart, management refusing user and wrong-audience callers, the
+  bidirectional call back into IdentityServerHost, and a genuinely ambiguous id conversion
+  answering 409.
 
-None of the fourteen drive real browser JavaScript — see
+Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
+(`dotnet test`), added in Phase 11 for the two decision tables that a black-box HTTP script
+would document badly: identity conversion, and the identity-type rules every service now
+depends on.
+
+None of the scripts drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
 browser is still worth doing at least once for both client apps.
 
@@ -169,5 +196,7 @@ All relevant apps for a given script must already be running (`dotnet run` /
 `npm run dev`, per project README) before you run it. As of Phase 6, IdentityServerHost's
 database also needs `src/Tools/ConfigIngestionTool` run at least once first — see its
 README — since IdentityServerHost itself no longer seeds any Clients/Resources on
-startup. As of Phase 7, `src/ExternalServicesStub` must also be running for any login to
-succeed (IdentityServerHost calls it during token issuance).
+startup. As of Phase 11, `src/Mini.UserService` must also be running for any login to
+succeed (IdentityServerHost calls it during token issuance — it was
+`src/ExternalServicesStub` from Phase 7 until then), and it creates its own separate
+`MiniUsers` database on first run. `run-all.ps1` handles all of this ordering.
