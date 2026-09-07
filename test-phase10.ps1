@@ -99,12 +99,16 @@ function Call($uri, $token, $method = "GET") {
 }
 
 Write-Host "1. Every host answers /health (new in this phase - run-all.ps1 depends on it)..."
+# Phase 11 edit: this list used to end with ExternalServicesStub on :5012. That service left
+# run-all.ps1's default set when Mini.UserService (:5013) replaced it, and this line was the only
+# other place the default set was written down - so removing it from one broke the other. The
+# assertion itself is unchanged: every host run-all.ps1 starts answers an unauthenticated /health.
 $hosts = @(
     @{ Name = "IdentityServerHost"; Url = "https://localhost:5001/health" }
     @{ Name = "ExternalIdp";        Url = "https://localhost:5011/health" }
     @{ Name = "SampleApi";          Url = "https://localhost:5007/health" }
     @{ Name = "MvcClient";          Url = "https://localhost:5006/health" }
-    @{ Name = "ExternalServicesStub"; Url = "https://localhost:5012/health" }
+    @{ Name = "Mini.UserService";   Url = "https://localhost:5013/health" }
 )
 foreach ($h in $hosts) {
     $r = Call $h.Url $null

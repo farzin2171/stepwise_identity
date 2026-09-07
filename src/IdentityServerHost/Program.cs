@@ -106,6 +106,13 @@ var identityServerBuilder = builder.Services.AddIdentityServer(options =>
        // exactly as the real IdG does; it's the *handling* of those providers that's flag-gated below.
        .AddIdentityProviderStore<IdentityProviderStore>();
 
+// Phase 11: protects this host's own API surface — Controllers/UserConversionController.cs, the
+// endpoint Mini.UserService calls back into. Registers Duende's local-API authentication scheme AND an
+// authorization policy (IdentityServerConstants.LocalApi.PolicyName) requiring the
+// "IdentityServerApi" scope. Validation happens in-process through IdentityServer's own
+// ITokenValidator, so this host never fetches its own discovery document over HTTP from itself.
+builder.Services.AddLocalApiAuthentication();
+
 // Phase 9: the flag gates whether database-backed schemes can actually serve a login, not merely whether
 // they're listed. Same name and same placement as the real IdG's Startup.cs. Off is the safe default for
 // anyone who hasn't ingested any IdentityProviders rows: the store is registered but nothing reads it,

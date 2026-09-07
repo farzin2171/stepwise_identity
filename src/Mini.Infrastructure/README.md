@@ -77,11 +77,17 @@ the same shape: IdentityServerHost maps key → display-name string and owns
 `Find`.
 
 **And the drift is already real.** Phase 9 added `initech` to IdentityServerHost's registry
-and to `ExternalServicesStub`'s. It is *not* in MvcClient's — so an Initech user who
-completes login at IdentityServerHost and lands on MvcClient resolves to no tenant and gets
-a 401 from `RequireTenantAttribute`. That is not a bug to fix in this phase; it is exactly
-the ops-drift failure the comment above predicted, now reproducible in three files. See
-IdentityServerHost's README, Phase 10 section, for how to watch it happen.
+and to the third one (`ExternalServicesStub` then, `Mini.UserService`'s `Tenants` table since
+Phase 11). It is *not* in MvcClient's — so an Initech user who completes login at
+IdentityServerHost and lands on MvcClient resolves to no tenant and gets a 401 from
+`RequireTenantAttribute`. That is not a bug to fix; it is exactly the ops-drift failure the
+comment above predicted, now reproducible in three files. See IdentityServerHost's README,
+Phase 10 section, for how to watch it happen.
+
+Phase 11 made it **asymmetric**: that third registry is now a SQL table with a management API,
+so a tenant can be added there over HTTP in seconds, while the other two still need a source
+edit and a redeploy. Sharing them would have made this unrepresentable; not sharing them means
+the sample now reproduces the *speed* mismatch as well as the existence mismatch.
 
 ### `IdentityGatewayConfiguration` stays in MvcClient
 
@@ -89,10 +95,37 @@ It describes *this app's* relationship to the identity gateway (its own client i
 and per-tenant IdG URLs). Nothing else in the repo has that relationship. A config class
 used by one project is not shared code.
 
-### IdentityServerHost's `ExternalServicesOptions` stays put, for now
+### IdentityServerHost's `ExternalServicesOptions` stays put — resolved in Phase 11
 
 It's bound from a section with the same name as MvcClient's (`ExternalServicesApi`) but is a
 genuinely different shape: a self-issued JWT with a `client_id` claim and no secret, versus
-real client-credentials against `/connect/token` with a per-tenant secret. Phase 11 converges
-IdentityServerHost onto the service-account path, and *that* is the phase where this either
-moves here or is deleted.
+real client-credentials against `/connect/token` with a per-tenant secret.
+
+Phase 10 said Phase 11 would converge IdentityServerHost onto the service-account path, and
+that this class would then "either move here or be deleted." **Neither happened, and the
+prediction was wrong on the facts.** Phase 7 had already verified that
+`IIdentityServerTools.IssueClientJwtAsync` is the *exact* pattern the real
+`TenantClient`/`UserClient` use; converging away from it would have made the sample less
+faithful, not more.
+
+So the two config classes stay separate because they describe two genuinely different
+authentication mechanisms, both of which the real system uses, for different jobs. That's the
+same test this whole section applies — shared names are not shared concepts — arriving at the
+same answer one more time. The full comparison of all three mechanisms is in
+[`docs/architecture/service-to-service-auth.md`](../../docs/architecture/service-to-service-auth.md).
+
+## What Phase 11 did consume
+
+Phase 10 extracted `ExternalServices/` on the strength of a prediction: *"Phase 11 needs the same
+service-account token client in IdentityServerHost."* The need was real; the direction was wrong.
+
+The consumer turned out to be **`Mini.UserService`**, calling IdentityServerHost — not
+IdentityServerHost calling out. `TokenClient`, `ServiceAccount`, `ServiceDefinition` and
+`ExternalServicesConfiguration` are used there exactly as MvcClient uses them, per-tenant secrets and
+all. An extraction justified by a prediction that was half wrong still paid off, because what was
+right about it — that a second consumer of the client-credentials pattern was coming — is what
+determined the shape.
+
+`Identity/` gained its predicted second consumer too: `Mini.UserService` registers `IIdentityContext`,
+`IdentityContextMiddleware` and `ServiceAccountOnlyFilter`. That consumer immediately found the limit
+of `IdentityContext`'s two-value `IdentityType` — see the same architecture doc's closing section.

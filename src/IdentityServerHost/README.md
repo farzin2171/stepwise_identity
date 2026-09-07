@@ -16,7 +16,8 @@ actually is under all its production scaffolding.
 8. Signing-key management (Key Vault instead of a developer credential) ✓
 9. IdentityProviderStore (DB-persisted external-provider config) ✓
 10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
-11. Mini.UserService (a real service replaces ExternalServicesStub) ← next
+11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
+12. Connectors (per-tenant, cascading user sources) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -1234,8 +1235,11 @@ database is the *provider* configuration, not the tenant.
 `/federation/initech-external-idp/`, and that the resulting token carries `name` from
 ExternalIdp and `tenant_id=initech` from the original request.
 
-Run `ExternalIdp` (5011), `IdentityServerHost` (5001), `ExternalServicesStub` (5012) and
-`SampleApi` (5007), and run `ConfigIngestionTool` once so the row exists.
+Run `ExternalIdp` (5011), `IdentityServerHost` (5001), `Mini.UserService` (5013) and
+`SampleApi` (5007), and run `ConfigIngestionTool` once so the row exists — or just
+`.\run-all.ps1`, which does all of it. (At Phase 9 the fourth process was
+`ExternalServicesStub` on `:5012`; Phase 11 replaced it, and this line is operational
+instructions rather than a record of what Phase 9 looked like, so it follows the change.)
 
 ### What's deliberately still missing
 
@@ -1443,6 +1447,281 @@ logs saying "these registries disagree."
 Then ask the harder question: which of the three registries should be authoritative, and what
 would it cost to make it so? That's the design question Phase 11's database-per-service split
 starts to answer.
+## Phase 11 — `Mini.UserService` replaces the stub
+
+Phase 7 built [`../ExternalServicesStub`](../ExternalServicesStub): two routes, two `Dictionary`
+literals, 60 lines. It was honest about being a stand-in and it served four phases well. This phase
+replaces it with [`../Mini.UserService`](../Mini.UserService) on `:5013` — same routes, same tenant
+GUIDs, same role table, and behind them a real SQL Server database, an authenticated management API,
+and an outbound call of its own back into this host.
+
+The stub is **kept and marked superseded**, not deleted. `run-all.ps1 -IncludeStub` starts both.
+
+### What "a real service" turned out to mean
+
+Three things, and only the first was in the plan.
+
+#### 1. Its own database, which is what makes the API mandatory
+
+`Mini.UserService/Data/ServiceDbContext.cs` points at **`MiniUsers`**. This host's three contexts all
+point at `MiniIdG`. That separation is the substance of "database per service":
+
+> Until now, anything in this repo that wanted a tenant's GUID could in principle have read it out of
+> a table in its own database. Now it genuinely cannot — the rows live in a database it has no
+> connection string for, so the only way to get them is to call this service's API. "Database per
+> service" stops being a slogan and starts being enforced by the absence of a credential.
+
+Baseline rows arrive through EF `HasData`, in the migration — not a startup seeder. Phase 6
+deliberately took row-seeding *out* of this host's startup and moved it to `ConfigIngestionTool`;
+adding a second startup seeder back into the repo would contradict that lesson. A migration carrying
+reference data is a different thing from an app seeding itself at boot.
+
+#### 2. A management API, which answers Phase 10's closing question
+
+Phase 10's "try it yourself" ended by asking which of this repo's three tenant registries should be
+authoritative, and what it would cost to make it so. Part of the answer is now runnable:
+
+```
+POST /api/v1/management/tenants   { "key": "…", "name": "…" }     → 201, a new tenant, no restart
+```
+
+Onboarding a tenant *there* no longer means editing a `Dictionary` literal. Note carefully what this
+does **not** fix: `Tenants.cs` in this project and `MvcClient`'s own `Tenants.cs` are still hardcoded.
+One of three registries became runtime-writable and **the drift got worse, on purpose** — before, all
+three moved at the same slow, redeploy-shaped speed; now one can move in seconds and two cannot. That
+asymmetry is exactly what makes ops reconciliation hard in the real system, and this repo can now
+reproduce it.
+
+#### 3. The dependency became bidirectional
+
+This was not in the Phase 10 plan, and it is the most useful thing in the phase.
+
+`Services.User`'s real behaviour, from the analysis of that repo: *"So User ⇄ IDG is bidirectional:
+IDG calls User for the role claim; User calls IDG for id conversion."* This host calls
+Mini.UserService during token issuance. Mini.UserService calls **back** — `IIdentityClientV1`,
+`GET /user/convert/{userId}?convertTo={Local|External}` — because the local↔external identity mapping
+lives in this host's `UserDbContext` (`ExternalUserStore`, Phase 5) and nowhere else. That service has
+the API surface and none of the data, so it has to ask.
+
+So [`Controllers/UserConversionController.cs`](Controllers/UserConversionController.cs) is new, and
+the two directions carry **different credentials**, because they cross the boundary for different
+reasons — full write-up in
+[`docs/architecture/service-to-service-auth.md`](../../docs/architecture/service-to-service-auth.md).
+
+### The Phase 10 plan was wrong about the central thing, and that's worth reading
+
+Phase 10's README and `docs/architecture/README.md` both promised:
+
+> IdentityServerHost calls `:5012` during token issuance using a **self-issued JWT**
+> (`IIdentityServerTools.IssueClientJwtAsync`), not a registered OAuth client. Phase 11 replaces that
+> with a real service-account token.
+
+**It doesn't, and it shouldn't.** Phase 7 had already verified the opposite:
+
+> **Where this matches the real IdG:** this is the *exact* pattern the real `TenantClient`/`UserClient`
+> use — `IIdentityServerTools.IssueClientJwtAsync`, no secret, IdentityServer acting as its own OAuth
+> client against its sibling services.
+
+Converging away from the self-issued JWT would have made the sample *less* faithful. The plan had
+mistaken "this looks less rigorous than client credentials" for "this is not what the real system
+does."
+
+What Phase 11 did instead was find out where the real system *does* use a service-account token, and
+put one there. Reading `Services.User` and `Services.TenantManagement`: their **management** APIs are
+service-account gated (`service_isService`), and `Services.User`'s **outbound** call to the IdG uses a
+service-account token. Reads from the IdG stay on the self-issued JWT. So now this sample has all
+three mechanisms, each where the real system has it — which is a better lesson than converging on one.
+
+Phase 10's own second "things that broke" entry predicted this shape of mistake: *"A plan written
+several phases ahead can be right about the destination and wrong about the timing."* This is the same
+lesson with the destination itself wrong, not just the timing.
+
+### Comparison against the real system
+
+| | Real system | This sample |
+| --- | --- | --- |
+| Services behind these routes | **two** — `Services.TenantManagement` and `Services.User`, separate repos, separate databases, separate deployments | one process, two audiences (`tenantmgntapi`, `userapi`), two authorization policies |
+| User lookup | per-tenant **cascading connector chain** — Azure AD B2C / Graph, custom web APIs, claims connectors, tried in order with fallback | one `UserIdentityRoles` table |
+| Caching | Redis — service principals, app-role assignments, token cache, distributed locks, tenant-aware key prefixes | none on reads; `IMemoryCache` only for the outbound service-account token |
+| Tenant read caching | **none** — a `MemoryCache` is registered and never applied, so every IdG lookup hits SQL | same: no cache, deliberately (see below) |
+| Management API auth | explicit `service_isService` claim | service-account filter **plus** a scope requirement (see "things that broke" #3) |
+| Audit | `AddAudit()` publishes `CREATE_TENANT` / `DELETE_TENANT` | nothing |
+| Health | `/health`, basic-auth gated, checks SQL + Logging + Authorization services | `/health`, anonymous, `{ status = "healthy" }` |
+
+The connector chain is the largest gap and it's deliberate — that's Phase 12. For what's *inside* the
+real `DIT.Connectors`, see the DIT library course at `C:\MyWork\MyLearning\EqusoftInfra`, Series 4.
+
+### The never-expiring cache bug, seen from the other end
+
+Phase 7 reproduced this host caching a tenant GUID with `AbsoluteExpiration = DateTimeOffset.MaxValue`.
+Building the callee made the shape of that bug clearer, and it is worth stating plainly:
+
+- the service that **owns** the tenant data has no cache at all (in the real system too — its
+  `MemoryCache` is registered and never applied, so every lookup hits SQL)
+- the caller that **cached the answer** never expires it
+
+So there is no point in the system where a changed tenant GUID can propagate. Adding a cache to
+Mini.UserService would not help, and invalidating one there would have nothing to invalidate. That
+asymmetry is why this is a *caller-side* bug, and why "the tenant service should publish change
+events" (which the real one has wired up and unused) is the actual fix rather than a caching tweak.
+
+### Things that broke, and why they're worth knowing
+
+1. **`Guid.ToString()` inside a LINQ `Select` is executed by SQL Server, and SQL Server uppercases
+   GUIDs.** `.Select(t => new { tenantId = t.TenantId.ToString(), … })` translates to
+   `CONVERT(char(36), …)`, which returns `8F14E45F-CEEA-…`. .NET's `Guid.ToString()` returns
+   `8f14e45f-ceea-…`. The stub returned lowercase string literals, so this silently changed the case
+   of the `tenant_guid` claim on **every token this sample issues**.
+
+   Worse: `test-phase7.ps1` passed anyway. Its assertion is `-ne "8f14e45f-…"`, and PowerShell's `-ne`
+   on strings is **case-insensitive by default**. The regression suite that exists specifically to
+   catch behaviour changes could not see this one. Fixed by projecting the `Guid` and formatting it in
+   memory; `test-phase11.ps1` §2 now asserts with `-cne` so the case is actually pinned.
+
+   The general lesson is nastier than the specific one: a "behaviour-preserving" refactor verified by
+   a passing test suite is only as good as the comparisons that suite makes.
+
+2. **Removing a service from `run-all.ps1` broke `test-phase10.ps1`, because the default set was
+   written down twice.** That script's §1 health check hardcoded `:5012`. Nothing links the two
+   lists, so dropping the stub from one left the other asserting a service nobody starts. Fixed by
+   updating the list, but the duplication is still there — the next phase that changes the process set
+   will hit it again.
+
+3. **`ServiceAccountOnlyFilter` could not tell this host's own token from a registered service
+   account, and the management API was briefly open to it.** This is the real find of the phase.
+
+   The filter's whole test is `IdentityType != Service` → 403, and `IdentityContext` infers `Service`
+   from the *absence* of a `sub` claim. A self-issued JWT has no `sub` either. Verified rather than
+   assumed — pointing `ExternalServices/UserClient.cs` at Mini.UserService's `/api/v2/identity`
+   diagnostic and reading the resulting `role` claim gave:
+
+   ```json
+   {"identityType":"Service","subject":null,"clientId":"identityserverhost","tenantKey":null}
+   ```
+
+   Same verdict a registered service account gets, and the same `userapi` audience the management
+   surface uses. **The token this host sends to *read* a role was being accepted to *write* one.**
+
+   What the self-issued JWT does *not* have is a `scope` claim — `IssueClientJwtAsync` stamps `iss`,
+   `nbf`, `iat`, `exp`, `client_id`, `aud`, and nothing else. A scope can only be obtained by going
+   through `/connect/token` as a registered client, which is exactly the property that makes a
+   credential revocable. So Mini.UserService's management policies require the scope as well, and the
+   fix was verified in both directions: with the read policy the probe returned 200; with the
+   management policy it returns 403.
+
+   The deeper problem is left open on purpose. This sample has **two** identity types for what is now
+   **three** kinds of caller (a user; a registered service account; a host issuing itself a token).
+   The real `DIT.Identity` distinguishes caller *kinds* explicitly with `service_isService` rather
+   than inferring them, and that's the general fix. `IdentityContextTests.TheSelfIssuedHostJwtIs
+   IndistinguishableFromARegisteredServiceAccount` asserts the current, weaker behaviour, so whichever
+   later phase adds the third type will see that test fail — which is the point of writing it down.
+
+4. **`System.Text.Json` rejects a commented config file outright.** Adding four clients and five
+   scopes to `IdentityServerConfig.json` meant explaining *why* each one exists next to the entry
+   itself, and `ConfigIngestionTool` died with `'/' is an invalid start of a value`. Every
+   `appsettings.json` in this repo already uses the JSON-with-comments dialect; the tool didn't.
+   One-line fix (`ReadCommentHandling = JsonCommentHandling.Skip`), and now the config file can carry
+   its own reasoning instead of exporting it to a README.
+
+5. **`ext-1` is carol's subject id at *two* providers, so external → local conversion is genuinely
+   ambiguous.** `ExternalIdp` is the login source for both `acme` (`external-idp`) and `initech`
+   (`initech-external-idp`), and the same test user sits behind both. This sample's local subject id
+   packs provider and subject into one string (`external:{scheme}:{subjectId}`, `Data/UserDbContext.cs`
+   Phase 5), so converting *from* the external id alone can only be a suffix match — and it matches
+   two rows.
+
+   `UserConversionController` returns **409 Conflict** with the reason named, rather than picking one.
+   The real IdG never faces this: its `User` table stores `ProviderName` and `ProviderSubjectId` in
+   separate columns, so the same lookup is an exact match. This is the concrete price of the
+   composite-key shortcut Phase 5 took, and it stayed invisible for six phases because nothing had
+   ever needed to search in that direction. `test-phase11.ps1` §8 pins it.
+
+6. **Duende's local-API authentication answers 401, not 403, for an insufficient scope.**
+   `AddLocalApiAuthentication()` checks the expected scope during *authentication* (through
+   IdentityServer's own `ITokenValidator`), so a perfectly valid token that simply lacks
+   `IdentityServerApi` is indistinguishable from no token at all. SampleApi's model — JWT Bearer
+   authenticates, then a policy forbids — gives 403 for the same situation. Not a bug, but if you're
+   debugging a 401 from `/api/user/convert` while holding a token you know is valid, the scope is what
+   to check.
+
+### Where this sample simplifies
+
+- **Two collapsed services, not two services.** The audience split (`tenantmgntapi` vs `userapi`) is
+  what's kept, so a User-service token can't read the tenant registry. In production that boundary is
+  enforced by them being different deployments; here an authorization policy is all that's left of it,
+  which is why it's written explicitly rather than left to nobody calling the wrong route.
+- **`tenantKey` is an explicit query parameter on the conversion endpoint.** It has to be: the caller
+  is this host's self-issued JWT, which carries no tenant claim and no `client_id` suffix to parse one
+  from. The outbound service-account secret *is* per-tenant, so somebody has to name the tenant, and
+  the only party who knows is the caller.
+- **Secrets in `appsettings.Development.json`.** Same reason `IdentityServerConfig.json` carries
+  plaintext secrets: this sample must run for anyone with nuget.org and LocalDB and nothing else.
+- **No audit trail.** The real management APIs publish audit events. Nothing here records who created
+  what.
+
+### Verifying it
+
+```powershell
+.\run-all.ps1                          # Mini.UserService is in the default set; the stub is not
+.\test-phase11.ps1
+.\test-phase7.ps1                      # must pass UNMODIFIED
+dotnet test tests\StepwiseIdentity.Tests
+```
+
+[`test-phase11.ps1`](../../test-phase11.ps1) covers eight things: health and the stub's absence; the
+registry coming from SQL with the GUID case pinned; the audience split refusing user, anonymous and
+wrong-audience service tokens; runtime tenant onboarding including the duplicate-key 409; management
+gating plus a role write taking effect immediately; the bidirectional conversion call; the local-API
+scope gate; and the 409 ambiguity. It creates and then deletes everything it writes, so repeated runs
+leave `MiniUsers` exactly as they found it — which matters because `test-phase7.ps1` asserts that bob
+has *no* role row, not that his row says `Member`.
+
+But **`test-phase7.ps1` is the real proof.** It was written against the stub, it is unmodified, and it
+now exercises Mini.UserService instead. Same routes, same GUIDs, same role fallback, entirely
+different implementation. That passing is what makes "replacement" a claim rather than a hope — and
+finding #1 above is the reminder that it's a claim only as strong as the assertions it makes.
+
+Phase 11 is also the first phase with an xunit project, [`tests/StepwiseIdentity.Tests`](../../tests/StepwiseIdentity.Tests) —
+30 tests across two decision tables (identity conversion, and the identity-type rules). Phase 10
+predicted Phase 12 would earn it; Phase 11's conversion logic is the first genuinely branching new
+logic in the repo, and the phase conventions say a decision table belongs in a table-driven test
+rather than a black-box HTTP script.
+
+### What's deliberately still missing
+
+- **Two identity types for three kinds of caller.** Finding #3. Left open on purpose, with a test
+  asserting the current weaker behaviour so the fix can't land silently.
+- **No cascading connector chain.** The real `Services.User` tries Graph, then custom web APIs, then
+  claims connectors, per tenant, with fallback. This has one table. That's Phase 12.
+- **No Redis, no distributed locks.** The real service caches service principals and app-role
+  assignments with hourly TTLs and tenant-aware key prefixes.
+- **The tenant-registry drift is still live, and now asymmetric.** One of three registries is
+  runtime-writable; the other two need a redeploy. Not a bug to fix.
+- **No change events.** The real Tenant Management service has `AddMessageQueue()` wired and publishes
+  nothing, so callers never learn a tenant changed — which is the upstream half of this host's
+  never-expiring cache. Both halves are reproduced; neither is fixed.
+- **`Mini.AuthorizationService` and `MiniAuthorization`.** Phase 10's architecture note said Phase 11
+  would introduce both databases. It introduced `MiniUsers` only — that note was one phase optimistic.
+
+### Try it yourself
+
+**Deactivate a tenant and watch a login break at token-issuance time.** `Mini.UserService`'s read API
+filters on `IsActive`, so:
+
+```sql
+UPDATE Tenants SET IsActive = 0 WHERE [Key] = 'globex';   -- in MiniUsers
+```
+
+Now log in as bob (`tenant:globex`). The login itself succeeds — `Tenants.cs` in *this* project has
+never heard of `IsActive` — and then token issuance fails, because `TenantClient` calls
+`EnsureSuccessStatusCode()` on a 404. Two registries, one of which can revoke a tenant and one of
+which can't, and the failure surfaces in neither of the places you'd look first.
+
+Then the harder question, which is Phase 12's: `acme` gets its users from a file-configured provider,
+`initech` from a database row, and both get their *roles* from one table in `MiniUsers`. What has to
+change for a tenant to bring its own user source — and where does the decision about *which* source to
+ask actually belong?
+
 
 ## Running it
 
@@ -1451,7 +1730,9 @@ starts to answer.
      `(localdb)\mssqllocaldb` instance reachable at startup — it ships with Visual
      Studio, or install it standalone via the SQL Server Express LocalDB installer.
      `dotnet run` creates the `MiniIdG` database and applies migrations on its own; it no
-     longer seeds any rows (Phase 6).
+     longer seeds any rows (Phase 6). **(Phase 11+)** `Mini.UserService` does the same for
+     its own, separate `MiniUsers` database — and unlike this host, its migration *does*
+     carry baseline rows (three tenants, alice's role), so it needs no ingestion step.
    - **(Phase 6+) Run the data-ingestion tool once** — `cd src/Tools/ConfigIngestionTool
      && dotnet run` — after `IdentityServerHost` has run at least once (to create the
      database/schema) and before logging in anywhere (there are no clients until this
@@ -1459,10 +1740,15 @@ starts to answer.
      [`Configurations/IdentityServerConfig.json`](Configurations/IdentityServerConfig.json)
      changes.
 
+   > **(Phase 10+) Or skip all of this: `.\run-all.ps1`** does the ingestion and starts every
+   > process in the right order, waiting for each `/health` before moving on. The terminals below are
+   > what it automates, kept because knowing the ordering matters more than typing it.
+
 1. **Six terminals** — every project's `launchSettings.json` already pins its own port
    (`https://localhost:5001` for IdentityServerHost, `5011` ExternalIdp, `5006`
-   MvcClient, `5007` SampleApi, `5012` ExternalServicesStub, `5173` ReactSpa), so a plain
-   `dotnet run` in each is enough:
+   MvcClient, `5007` SampleApi, `5013` Mini.UserService, `5173` ReactSpa), so a plain
+   `dotnet run` in each is enough. (`5012` is the superseded `ExternalServicesStub`, which
+   nothing calls as of Phase 11 — start it only to compare it against its replacement.)
 
    ```bash
    # terminal 1
@@ -1470,7 +1756,7 @@ starts to answer.
    dotnet run
 
    # terminal 2
-   cd src/ExternalServicesStub
+   cd src/Mini.UserService
    dotnet run
 
    # terminal 3
@@ -1571,14 +1857,26 @@ starts to answer.
 
 ## What's deliberately missing (and why)
 
-- **The same plumbing exists three times over.** `TenantContext`,
-  `TenantResolutionMiddleware` and `Tenants` live independently in both
-  `IdentityServerHost` and `MvcClient/Infrastructure/`, and `SampleApi`'s
-  `IIdentityContext` is a third variation on the same idea. Each was written for its own
-  phase and none knows about the others. Phase 10 extracts them into
-  `Mini.Infrastructure` — and the extraction is itself the test of a claim `CONTEXT.md`
-  currently makes by assertion: that the two `TenantContext`s are genuinely different
-  concepts rather than one abstraction with two resolvers.
+- ~~**The same plumbing exists three times over.**~~ Resolved in Phase 10 — the genuinely
+  shared parts (`ResiliencePolicies`, `IIdentityContext` and friends, `TokenClient` and the
+  service registry) are in `Mini.Infrastructure`. The two `TenantContext`s and the tenant
+  registries stayed separate, and that finding is the more interesting half: see the Phase 10
+  section above.
+- **Two identity types, three kinds of caller.** New in Phase 11.
+  `Mini.Infrastructure`'s `IdentityType` has `User` and `Service`; the repo now has a user, a
+  registered service account, and this host issuing itself a token — and the last two are
+  indistinguishable, because both are identified by the *absence* of `sub`. Mini.UserService
+  works around it by requiring a `scope` claim on its management API. The real fix is the real
+  system's explicit `service_isService` claim, and it's left undone with a test pinning the
+  current behaviour so it can't change silently. See Phase 11's "things that broke" #3.
+- **A local subject id that packs provider and subject into one string.**
+  `external:{scheme}:{subjectId}` (Phase 5) made external → local conversion a suffix match,
+  and carol is `ext-1` at two different providers — so it genuinely has two answers and returns
+  409. The real IdG stores the two parts in separate columns. Fixing it means a schema change
+  and a migration of every provisioned identity, which no phase has needed badly enough yet.
+- **No per-tenant connector chain.** Roles come from one table in `MiniUsers` for every tenant.
+  The real `Services.User` cascades Graph → custom web APIs → claims connectors, per tenant,
+  with fallback. That's Phase 12.
 - **Real business data or logic behind the API.** SampleApi has exactly one endpoint
   that echoes claims — it exists to prove token validation works, not to be a real
   service. Also see its own README for its list of "deliberately missing."
@@ -1614,6 +1912,10 @@ starts to answer.
   [`docs/azure-key-vault-setup.md`](docs/azure-key-vault-setup.md) for that. Still
   defaults to the developer key, on purpose, so this sample runs with zero Azure setup
   unless you opt in.
+- ~~**The two sibling services are hardcoded dictionaries in one stub process.**~~ Resolved in
+  Phase 11 — `Mini.UserService` has its own `MiniUsers` database, a service-account-gated
+  management API, and an outbound call back into this host. Still one process serving both
+  audiences rather than two deployments, which is the simplification that remains.
 - **Claim-mapping complexity for external logins.** No `FederatedConfiguration`, no
   configurable external-id claim name, no duplicate-claim handling — Carol's `name`
   claim just works because ExternalIdp only ever sends one of it.

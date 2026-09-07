@@ -26,8 +26,19 @@ var configFilePath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory
 
 Console.WriteLine($"Reading {configFilePath}");
 var json = await File.ReadAllTextAsync(configFilePath);
-var document = JsonSerializer.Deserialize<ConfigDocument>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-    ?? throw new InvalidOperationException("Config file deserialized to null.");
+// ReadCommentHandling/AllowTrailingCommas added in Phase 11, and not for cosmetic reasons. That phase
+// added four clients and five scopes to IdentityServerConfig.json whose *reason for existing* is the
+// interesting part — which audience each one lands in, why a service account has no tenant suffix. That
+// explanation has to live next to the entry it explains, and System.Text.Json rejects a commented
+// document outright by default ("'/' is an invalid start of a value") rather than ignoring it. This is
+// the "JSON with comments" dialect every appsettings.json already uses; the tool now reads the same
+// dialect the rest of the repo's config is written in.
+var document = JsonSerializer.Deserialize<ConfigDocument>(json, new JsonSerializerOptions
+{
+    PropertyNameCaseInsensitive = true,
+    ReadCommentHandling = JsonCommentHandling.Skip,
+    AllowTrailingCommas = true
+}) ?? throw new InvalidOperationException("Config file deserialized to null.");
 
 // ConfigurationDbContext.OnModelCreating reads a ConfigurationStoreOptions out of its own internal DI
 // container — inside IdentityServerHost that comes for free from AddConfigurationStore(), but this is
