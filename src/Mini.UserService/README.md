@@ -10,7 +10,12 @@ Runs on **`https://localhost:5013`**. The stub is still on `:5012`, kept and mar
 Data/            ServiceDbContext — Tenants, UserIdentityRoles, in their own MiniUsers database
 Endpoints/       one file per real controller it stands in for
 ExternalServices/IdentityGatewayClient — the call BACK into IdentityServerHost
+Connectors/      Phase 12: where a tenant's user data comes from, decided by rows
 ```
+
+Phase 12 made this the service that answers *"for this tenant, which integration serves this
+extension point?"* — the `DIT.Connectors` port. That is a big enough subject to have its own
+current-state doc: [`docs/architecture/connectors.md`](../../docs/architecture/connectors.md).
 
 ## What it stands in for
 
@@ -77,21 +82,54 @@ That makes the IdG ⇄ User dependency **bidirectional**, exactly as it is in pr
 The full comparison is in
 [`docs/architecture/service-to-service-auth.md`](../../docs/architecture/service-to-service-auth.md).
 
+## Connectors: a tenant's user source is a row, not a code path (Phase 12)
+
+The role lookup no longer means "read one table." When the caller names a tenant, it means:
+
+1. resolve the tenant key to its GUID (`ServiceDbContext`, filtered on `IsActive`),
+2. ask the **choice** layer which connector(s) serve `GetUserRole` for that GUID
+   (`CascadingConnectorDbContext`),
+3. walk them in `Order` until one answers.
+
+Which produces, from the shipped seed rows: **acme** cascading to
+[Acme's own web API](../Mini.AcmeApi) and then to a claim on the incoming token; **globex** resolving
+to nothing (its choice row picks a base-disabled connector) and therefore still reading
+`UserIdentityRoles`; **initech** cascading into a deliberately mis-pointed host and quietly landing on
+the `Member` fallback.
+
+Three things worth carrying away, all covered properly in
+[`docs/architecture/connectors.md`](../../docs/architecture/connectors.md):
+
+- **A lookup needs *two* `IsEnabled` flags true** — one on the catalog pairing, one on the tenant's
+  choice. So a tenant can be fully configured on paper and still resolve to no connector, with the
+  cause a row away in a different table.
+- **A cascade absorbs failures; a single connector's failure surfaces.** That is what "cascading"
+  means, and the cost is that a cascade hides misconfiguration: initech's role lookup answers 200 with
+  `Member` while the *identical* fault on the non-cascading email lookup answers 502.
+- **This project's own contexts now disagree by convention.** The connector tables key on the tenant
+  GUID and live in a different `DbContext` from `Tenants`, so there is no foreign key and the three
+  GUIDs are `HasData` literals in both places.
+
 ## Where this sample simplifies
 
 | | Real `Services.User` | This |
 | --- | --- | --- |
-| User sources | per-tenant *cascading connector chain* — Azure AD B2C / Graph, custom web APIs, claims connectors, tried in order with fallback | one `UserIdentityRoles` table |
+| Connector packaging | `DIT.Connectors`, four csprojs, dependencies pointing down only | one `Connectors/` folder in this project |
+| Connector types | `WebApi`, `AzureGraph` (Graph / B2C / Entra), `Claim` | `WebApi` and `Claim` work; `AzureGraph` is a catalog row that answers "not implemented" |
+| Connector config | imported as desired state through `ConnectorManagementController` and reconciled | `HasData` in a migration |
+| Extension points | many (`GetUserDetails`, users by email, app roles, service principals…) | two (`GetUserRole`, `GetUserByEmail`) |
 | Caching | Redis for service principals, app-role assignments and tokens, with distributed locks and tenant-aware key prefixes | none (`IMemoryCache` only for the outbound service-account token) |
-| Tenant scoping | every connector configuration is tenant-scoped, resolved through `ITenantContext` | only the outbound service-account secret is per-tenant |
+| Tenant scoping | every connector configuration is tenant-scoped, resolved through `ITenantContext` | tenant-scoped too, since Phase 12 — but the tenant is an explicit parameter, not resolved from the caller, because the IdG's self-issued JWT carries no tenant claim |
 | Health | `/health`, basic-auth gated, checks SQL + Logging service + Authorization service | `/health`, anonymous, `{ status = "healthy" }` |
-| Roles | a real identity-role concept fed from Graph app-role assignments | a two-column table with a `"Member"` fallback |
+| Roles | a real identity-role concept fed from Graph app-role assignments | whatever a tenant's connector answers, or a two-column table, or a `"Member"` fallback — see below |
 | Guests | `UserClient` short-circuits to `"Guest"` without calling out at all | no guest concept |
 | Audit | `AddAudit()` publishes `CREATE_TENANT` / `DELETE_TENANT` events | nothing |
 
-The connector chain is the big one, and it's deliberate: that is Phase 12's subject
-(`docs/architecture/connectors.md`), and it's what the DIT library course at
-`C:\MyWork\MyLearning\EqusoftInfra` Series 4 teaches from the inside.
+The connector chain used to be the big one on this list. Phase 12 ported it — the schema, the two
+kill-switch flags, the cascade rule and one real WebApi target — so what remains is the layers around
+it: no desired-state import API, no Redis, no Graph. `docs/architecture/connectors.md` has the full
+current-state picture, and EqusoftInfra Series 4 teaches the library it was ported from, from the
+inside.
 
 ## Configuration
 
@@ -112,11 +150,16 @@ and ingested by `ConfigIngestionTool`, like every other client in this sample.
 ## Verifying it
 
 ```powershell
-.\run-all.ps1            # starts this service; the stub is no longer in the default set
+.\run-all.ps1            # starts this service AND Mini.AcmeApi; the stub is not in the default set
 .\test-phase11.ps1
+.\test-phase12.ps1
 .\test-phase7.ps1        # must pass UNMODIFIED - that's the real proof
 dotnet test tests\StepwiseIdentity.Tests
 ```
 
-`test-phase7.ps1` was written against the stub. It passing here, with no edits, is what makes
-"replacement" a claim rather than a hope.
+`test-phase7.ps1` was written against the stub, in Phase 7. It has never been edited, and it asserts
+that alice's role is `Admin`. That answer used to come from a `Dictionary` literal in another process;
+then from a row in this service's database; and as of Phase 12 it travels out of
+[Acme's own web API](../Mini.AcmeApi), over HTTP, authenticated with a per-tenant service-account
+token, selected by rows in a table that didn't exist a phase ago. Same assertion, same value, three
+mechanisms deep — which is what makes each of those "replacements" a claim rather than a hope.

@@ -17,7 +17,8 @@ actually is under all its production scaffolding.
 9. IdentityProviderStore (DB-persisted external-provider config) ✓
 10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
 11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
-12. Connectors (per-tenant, cascading user sources) ← next
+12. Connectors (per-tenant, cascading user sources) ✓
+13. Mini.AuthorizationService (the permission decision leaves the token) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are
@@ -1723,6 +1724,333 @@ change for a tenant to bring its own user source — and where does the decision
 ask actually belong?
 
 
+
+## Phase 12 — connectors (per-tenant, cascading user sources)
+
+Phase 11's "try it yourself" ended by asking where the decision about *which* user source to ask
+belongs. This phase answers it: **in rows, not in code.** A tenant's `role` claim now comes from
+whatever that tenant's connector configuration says it comes from — Acme's own web API, a claim on
+the incoming token, or the same `UserIdentityRoles` table as before — and moving a tenant between
+those is a SQL update, not a deployment.
+
+Ported from `DIT.Connectors` into [`../Mini.UserService/Connectors/`](../Mini.UserService/Connectors/),
+plus one new process: [`../Mini.AcmeApi`](../Mini.AcmeApi) on `:5014`, standing in for a system a
+**tenant** owns. Current-state write-up in
+[`docs/architecture/connectors.md`](../../docs/architecture/connectors.md).
+
+### What changed in *this* project: eleven lines
+
+That number is the point of the phase, so it goes first.
+
+`ExternalServices/UserClient.cs` gained a `tenantKey` parameter and appends `?tenant=` when it is not
+null. `Services/SampleProfileService.cs` passes the `tenantKey` it had already computed for
+`tenant_guid`. `Configurations/IdentityServerConfig.json` gained an API scope, an API resource, one
+scope on three existing clients, and a probe client. That is the entire diff in the authorization
+server.
+
+Nothing here knows that `acme` gets its roles from Acme's HR system and `globex` still gets them from
+a table. There is no branch, no configuration section, no per-tenant anything. The decision moved
+behind an HTTP call — which is the difference between "the IdG supports per-tenant user sources" and
+"the IdG has an if-statement per tenant."
+
+The `tenantKey` argument was *forced*, not chosen. Connector configuration is per-tenant, and the
+self-issued JWT this host calls with carries no tenant claim (`CONTEXT.md`, "Self-issued JWT") — so
+the callee cannot work out which tenant it is answering for, and the caller has to say. Exactly the
+reason Phase 11's conversion endpoint takes a `tenant` query parameter. Nullable, and null means the
+callee takes its pre-Phase-12 path, which is what keeps a login with no tenant hint at all
+(`test-phase3.ps1` §4) working untouched.
+
+### The schema is the lesson: catalog, choice, settings
+
+Eight tables in
+[`CascadingConnectorDbContext`](../Mini.UserService/Connectors/Data/CascadingConnectorDbContext.cs),
+in three layers. From the real library map: *"catalog says what's possible, choice says what's picked,
+settings say where to go."*
+
+| Layer | Tables | Why it is its own layer |
+| --- | --- | --- |
+| **Catalog** | `Connectors` (type), `Handlers` (extension point), `ConnectorHandlers` (which types *can* serve which points) | Adding a whole new integration type touches only this |
+| **Choice** | `ConnectorHandlerTenants`, `ConnectorHandlerCascadingTenants` (+ `Order`) | Adding a tenant touches only this and settings |
+| **Settings** | `WebApiConnectorConfigurations` (tenant → host), `…Routes` (handler → route template), `ClaimConnectorConfigurations` | Where to go, once the choice is made |
+
+The cascading table exists **only** in the user service's context in the real library too, and that
+asymmetry is not arbitrary: looking a user up in three places and taking the first hit is a thing you
+want for *identity* data and almost nothing else.
+
+**Two `IsEnabled` flags, and a lookup needs both true.** A kill switch at the platform level and at
+the tenant level, so an integration can be withdrawn from everyone or from one client without
+deleting anybody's configuration. It also means a vanished connector has two indistinguishable
+causes, which is the same shape as Phase 9's `DynamicIdentityProviderEnabled` and just as annoying to
+diagnose.
+
+### The shipped decision table
+
+Seeded through `HasData`, so it arrives with the schema — the same choice Phase 11 made, and for the
+same reason Phase 6 gives (a migration carrying reference data is a different thing from an app
+seeding itself at boot).
+
+| Tenant | `GetUserRole` | Result |
+| --- | --- | --- |
+| **acme** | **cascading**: 1 WebApi (`:5014`) → 2 Claim (`role`) | alice → `Admin` *from Acme's API*, carol → `Underwriter`, unknown → 404 from Acme, chain falls through, no claim → `Member` |
+| **globex** | single **AzureGraph**, tenant-enabled, **base-disabled** | resolves to nothing → local table → alice `Admin`, bob `Member`. **The control case: Phase 11 behaviour, unchanged.** |
+| **initech** | **cascading**: 1 WebApi → 2 Claim | its host is *Acme's* host, which answers 403 → absorbed → `Member`, HTTP 200 |
+
+`alice → Admin` is byte-identical to the local table's answer **on purpose**, so
+[`test-phase7.ps1`](../../test-phase7.ps1) passes unmodified while the source of the claim moves. Same
+trick Phase 11 played with the tenant GUIDs, same reason: holding the value constant is what makes
+"the mechanism changed" provable rather than merely plausible.
+
+**Carol is the actual proof.** She is a federated identity with no row anywhere in `MiniUsers`, so
+before this phase she got the `Member` fallback. `Underwriter` exists in no database in this repo —
+only in Acme's own directory. `test-phase12.ps1` §2 asserts `Underwriter` with `?tenant=acme` and
+`Member` without it: same subject, same request, two sources.
+
+### `Mini.AcmeApi` is not our system, and the code says so
+
+It has no `IIdentityContext`, no `ProblemDetails`, no versioned routes, and a `Dictionary` for
+storage. Every convention this repo ports from `Services.Authorization` is a *DIT* convention, and
+applying them there would quietly imply that Acme builds services the way DIT does — the one thing
+this project must not imply.
+
+What it does have is **two different checks doing two different jobs**:
+
+```
+   scope "acmeapi"   ──▶  which RESOURCE may be reached   ──▶  audience check  ──▶  401
+   client_id         ──▶  whose DATA within it            ──▶  policy check    ──▶  403
+```
+
+All three `userservice-svc.{tenant}` clients are allowed the `acmeapi` scope, so **all three hold a
+token Acme accepts**, and only Acme's own gets past its policy. That is deliberate rather than sloppy:
+a scope cannot express "this tenant's data," and Acme's own policy is the only thing in the entire
+chain positioned to catch a connector row that names the wrong tenant's host. Which is precisely what
+Initech's row does.
+
+The auth mechanism isn't invented either — the `dit-architecture` reference for `Services.User` is
+explicit that "connector calls to the custom web APIs carry that token, plus an optional
+`OriginUserIdentifier` header for user context," so this reuses the per-tenant service accounts
+Phase 11 already registered.
+
+### The rule that makes "cascading" mean something
+
+In [`ActionHandlerBase`](../Mini.UserService/Connectors/Handlers/ActionHandlerBase.cs):
+
+- **A cascade absorbs failures.** The next link might answer, so the chain continues. A cascade whose
+  first failure aborted the request would have no fallback behaviour at all.
+- **A single connector's failure is the outcome** — nothing behind it, so it surfaces as a 502.
+- **"No such user" is an ANSWER, never a failure**, for either kind.
+
+That is reasoned from the schema, not read off the real source, and it is worth saying which:
+the `dit-architecture` reference lists "the cascading-handler priority/fallback order is partly inside
+the DIT connector library" under its own **Gaps**. So the rules are this sample's reading, flagged in
+the code as such.
+
+`GetUserByEmail` exists solely so the *non*-cascading half is demonstrable. It is a real
+`Services.User` endpoint, nothing in this repo calls it, and it is the only place a connector failure
+is allowed to be fatal.
+
+### The uncomfortable finding: a cascade hides misconfiguration
+
+Initech's `WebApiConnectorConfiguration.Host` names Acme's API — the single most likely connector
+mistake there is, and a deliberately planted one. Acme answers 403, the chain moves on, the claim
+connector finds nothing, and **every Initech user quietly becomes `Member`**. HTTP 200. No login
+breaks. The only trace is a log line.
+
+The *same* misconfiguration, *same* tenant, *same* host, on the email lookup: **502**. Nothing about
+the fault differs — only whether something was configured behind it.
+
+And it is not only misconfiguration. Stop `Mini.AcmeApi` and log in as alice: the login succeeds and
+her role is `Member`. **A privilege disappeared from a token and nothing reported an error.** For an
+authorization-relevant claim, "fall back quietly" is a security posture and not merely an availability
+one. This sample does not fix it, because the real design works this way and knowing that is the
+lesson; what it does is make it visible — `ConnectorChainResult.Errors` carries every absorbed failure
+so an endpoint *can* surface them. Whether anybody looks is the real-world question.
+
+### Comparison against the real system
+
+| | Real `Services.User` + `DIT.Connectors` | This |
+| --- | --- | --- |
+| Packaging | four csprojs, dependencies pointing down only (`Data ← Domain ← HTTP ← AspNetCore`) | one folder in the one service that consumes it |
+| Entry points | `AddConnectors()`, `AddConnectorsManagement<T>()`, `AddWebApiConnectorsManagement()` | `AddConnectors()` only |
+| Connector types | `WebApi`, `AzureGraph` (Graph/B2C/Entra), `Claim` | `WebApi` and `Claim` work; `AzureGraph` is a catalog row that answers "not implemented in this sample" |
+| Config import | validate (FluentValidation) → diff → add/delete/update → `ConfigurationResults`: desired-state reconciliation, the same idea as Terraform | `HasData` in a migration |
+| Extension points | many (`GetUserDetails`, users by email, app roles, service principals, `SubmitDocument`, …) | two |
+| HTTP | `DIT.HTTP.Rest`'s `RestClient`, config-driven policies per named client | `HttpClient`, no policies (see below) |
+| Result mapping | AutoMapper profiles per tenant shape | Acme's field names happen to match |
+| Caching | Redis, hourly TTLs, distributed locks, tenant-aware key prefixes | none |
+
+Where it lives is a decision worth defending: this repo's rule is that a concern needed by **more than
+one** project goes in `Mini.Infrastructure`, and this is needed by exactly one. Extracting it now
+would be designing for a duplication that has not happened, which is what Phase 10 was written to
+argue against. When `Mini.AuthorizationService` needs the same extension-point machinery, that is the
+phase that earns the move. Why the real library is split across four csprojs is EqusoftInfra Series
+4's subject and is not re-explained here.
+
+### Things that broke, and why they're worth knowing
+
+**1. The migrations-history table I "fixed" a problem that didn't exist.** Two `DbContext`s over one
+database, so I gave the connector one `MigrationsHistoryTable("__EFMigrationsHistory_Connectors")` and
+wrote a comment promising this section would show what happens without it. Then I checked: removed the
+call, dropped `MiniUsers`, started the service. **It works.** Both migrations apply, both rows land in
+the one `__EFMigrationsHistory`, and `dotnet ef migrations list` for each context still reports only
+its own — because a context's migration set comes from its assembly, not from the table. Nothing
+complains anywhere.
+
+The separation stayed, as hygiene: one `MigrationId` primary key shared by two independent histories
+is a latent collision and makes "revert this context to migration X" ambiguous to whoever reads the
+table. But it is not the load-bearing safety measure it looks like, and the comment claiming it was
+had to be rewritten. Worth the detour for the general lesson: a gotcha you *assumed* is worth ten
+minutes of checking before it becomes a gotcha somebody else quotes.
+
+**2. A 404 from a tenant's API came back as a 502.** The chain-exhaustion rule was written as "if the
+chain was cascading, no value; otherwise, error" — decided on `isCascading` alone. Running it,
+`GET /User/identities/email?email=nobody@acme.test&tenant=acme` answered **502** where a **404**
+belongs. Acme's API had said, correctly, "no such user"; the handler turned a working integration
+into a broken one.
+
+The bug was collapsing two different things into "the chain ended with nothing." What actually matters
+is whether anything *failed* on the way:
+
+```csharp
+return errors.Count > 0 && !isCascading
+    ? ConnectorChainResult<TOutput>.Failed(chain[0], errors)
+    : ConnectorChainResult<TOutput>.Exhausted(chain, errors);
+```
+
+This is exactly the kind of table the phase conventions say belongs in xunit rather than in prose, and
+`ConnectorChainTests` now has a row for it — labelled as the row that was wrong.
+
+**3. A missing required query parameter reported 500, not 400.** The email endpoint declared
+`string tenant`, so a request without `?tenant=` never reached the handler: minimal-API parameter
+binding throws `BadHttpRequestException` first, and `app.UseExceptionHandler()` reports it as a **500**
+rather than honouring its 400. The caller gets "something exploded in the user service" for what is
+actually "you forgot a query parameter."
+
+Fixed by binding both parameters as `string?` and validating in the handler, which puts the 400 — and
+a `ProblemDetails` naming the parameter and why it is required — back in reach. Worth knowing because
+it applies to every minimal-API endpoint in this repo with a required non-route parameter, and there
+is nothing about the endpoint's declaration that hints at it.
+
+**4. A retry policy made a dead tenant integration twelve seconds slower and no more correct.** The
+connectors `HttpClient` started with `ResiliencePolicies.Retry()`, reused from `Mini.Infrastructure`
+like every other client here. With `Mini.AcmeApi` stopped, acme's role lookup took a consistent
+**18.3 seconds**: three attempts at ~4.1s of connect timeout each, plus the policy's 2s and 4s
+backoff. One raw attempt at the same dead port takes **4.1s**. Twelve seconds of pure delay on every
+login for that tenant, and the answer — `Member` — identical either way.
+
+The reason it is wrong is structural rather than merely expensive: **a cascade's next link *is* the
+fallback**, so retrying in front of it multiplies the latency the cascade exists to avoid, to reach a
+link that was always going to be reached. Retry belongs where there is nothing behind the call, which
+is where `MvcClient` and `IdentityServerHost` use it. Removed, and the measurement is in the code
+comment so the next person doesn't "fix" its absence.
+
+The circuit breaker was left off too, and that one is reasoning rather than measurement, said as such:
+Polly's breaker state is per-policy-instance and `AddPolicyHandler` attaches one instance per named
+client, so with per-tenant hosts three failures against one tenant's dead integration would open the
+circuit for thirty seconds against **every** tenant's. Nothing in this sample reproduces it (Initech's
+403 is a 4xx, which `HandleTransientHttpError` doesn't count). What that leaves unsolved is real and
+named below.
+
+**5. `$emailUrl?email=` silently evaluated to nothing.** In `test-phase12.ps1`, `"$emailUrl?email=..."`
+produced `"=alice%40acme.test&tenant=initech"` — PowerShell accepts `?` as a valid character in an
+unbraced variable name, so it parsed `$emailUrl?email` as one (undefined, therefore empty) variable.
+`HttpClient` then rejected the relative URI, which at least failed loudly. `${emailUrl}?email=` fixes
+it. Not a system bug, but every `test-phase*.ps1` in this repo builds URLs by interpolation, and
+`/` happens to terminate a variable name while `?` does not.
+
+### Where this sample simplifies
+
+- **Configuration arrives in a migration, not through an import API.** The real
+  `ConnectorManagementController` takes a desired-state document and reconciles it (validate → diff →
+  add the missing, delete the absent, update the changed → `ConfigurationResults`). That is a phase of
+  its own; `HasData` is what this one uses, consistent with Phase 11.
+- **One service-account token serves two callees.** `TokenClient` requests no scope, so a token carries
+  every scope its client is allowed — the same bearer converts a user id at `:5001` and reads users at
+  `:5014`. A real deployment would want a service account per integration.
+- **The claim connector cannot answer on the login path**, and structurally so: the caller is a
+  self-issued JWT with no user claims, and the user whose role is being looked up is not the caller. It
+  is proven with a purpose-built probe client (`userservice-claimprobe-svc`, labelled a test fixture in
+  `IdentityServerConfig.json`) rather than left ambiguous — without it, "the cascade reached position 2
+  and found nothing" and "the cascade never got there" look identical.
+- **Two handlers, and one of them exists only to be non-cascading.** `GetUserByEmail` is real, but
+  nothing in this repo needs it.
+
+### Verifying it
+
+```powershell
+.\run-all.ps1              # Mini.AcmeApi (:5014) is in the default set - it's on acme's login path
+.\test-phase12.ps1
+.\test-phase7.ps1          # must pass UNMODIFIED - and now proves the source moved
+dotnet test tests\StepwiseIdentity.Tests
+```
+
+[`test-phase12.ps1`](../../test-phase12.ps1) covers eight things: Acme's API refusing anonymous,
+wrong-audience and wrong-**tenant** callers; acme's cascade answering from Acme's own system, with
+carol as the proof; the chain's *ordering* demonstrated by the same token being answered at position 2
+for bob and shadowed at position 1 for alice; globex resolving to no connector despite an enabled
+choice row; the same misconfiguration absorbed by a cascade and surfaced as a 502 without one; the
+non-cascading handler's four distinct statuses; a real login carrying a role claim out of Acme's
+system; and a deactivated tenant losing access to its connectors.
+
+`dotnet test` is 58 tests now, up from 30 — two new decision tables. `ConnectorResolutionTests` runs
+against the **shipped** `HasData` rows, so it pins the decision table itself: flip an `IsEnabled` or
+move a row between the choice tables and it says so.
+
+But **`test-phase7.ps1` is still the sharpest test in the repo.** Unmodified since Phase 7, it
+asserts alice's role is `Admin`. That answer now travels out of a different process, over HTTP,
+authenticated with a service-account token, selected by rows in a table that didn't exist last phase.
+Same assertion, same value, three mechanisms deep.
+
+### What's deliberately still missing
+
+- **No per-host circuit breaker, and this is the real gap.** A dead tenant integration still costs
+  ~4.1s per login for that tenant. A breaker is exactly the tool; a *shared* one would turn one
+  tenant's outage into everybody's. The fix is a breaker keyed on the request host.
+- **No connector configuration import API.** Onboarding a tenant's integration means a migration.
+  Phase 11 made *tenants* runtime-writable and this phase did not do the same for their connectors —
+  so the asymmetry `docs/architecture/README.md` describes just got one notch worse.
+- **`AzureGraph` is a catalog row, not a connector.** Microsoft Graph plus a real Entra tenant is
+  outside what this repo will take on (nuget.org and LocalDB, nothing else). The dispatcher refuses
+  explicitly rather than pretending.
+- **Duplicate `Order` values in a cascade are unguarded.** The non-cascading table throws on
+  ambiguity; two cascading rows sharing an `Order` produce a chain ordered however SQL Server feels,
+  which is the same non-determinism the throw exists to prevent. Named in the repository's own
+  comments, not fixed.
+- **No Redis.** The real service caches service principals and app-role assignments on hourly TTLs
+  with distributed locks and tenant-aware key prefixes. Every connector call here is a live call.
+- **A fourth place a tenant's GUID is written down.** `CascadingConnectorDbContext` carries the three
+  tenant GUIDs as `HasData` literals, because the `Tenants` table lives in a different context and a
+  foreign key is therefore impossible. Two contexts in one service over one database, agreeing by
+  convention — see `docs/architecture/README.md`.
+- **Nothing tells a tenant their integration is failing.** No alert, no health check on a connector
+  host, no metric. The absorbed errors reach a log line and stop there.
+
+### Try it yourself
+
+**Watch a privilege vanish quietly.** Stop `Mini.AcmeApi` — find the `:5014` process, or take its pid
+from `.run-all.pids` — and log in as alice at `tenant:acme`.
+
+The login **succeeds**, and her `role` claim is `Member` instead of `Admin`. The cascade absorbed a
+connection failure exactly as it absorbs Initech's 403, so an authorization-relevant claim silently
+downgraded and nothing anywhere reported an error. Now run `test-phase7.ps1`: it fails on the role
+assertion and points at `IdentityServerHost`, which is not the process that is broken.
+
+Then make it loud, and see what that costs. Delete acme's second cascading row:
+
+```sql
+DELETE FROM ConnectorHandlerCascadingTenants WHERE ConnectorHandlerCascadingTenantId = 2;  -- in MiniUsers
+```
+
+Acme's role lookup is now a chain of one. Log in again with `:5014` still down: **token issuance
+fails** — `UserClient` calls `EnsureSuccessStatusCode()` on the 502, so alice cannot log in at all.
+That is the trade in its plainest form. A cascade cannot both preserve a claim's integrity and keep a
+tenant logging in when their own system is down; it picks the second, silently, and this is the one row
+that changes which.
+
+Then the harder question, which the next phase inherits: `role` is a claim stamped onto a token at
+issuance time by whichever source answered first. So what happens when the *authorization decision*
+needs to be made by a service that never saw that token being minted — and should a permission be a
+claim at all, or a question you ask?
+
 ## Running it
 
 0. **Prerequisites.**
@@ -1874,9 +2202,20 @@ ask actually belong?
   and carol is `ext-1` at two different providers — so it genuinely has two answers and returns
   409. The real IdG stores the two parts in separate columns. Fixing it means a schema change
   and a migration of every provisioned identity, which no phase has needed badly enough yet.
-- **No per-tenant connector chain.** Roles come from one table in `MiniUsers` for every tenant.
-  The real `Services.User` cascades Graph → custom web APIs → claims connectors, per tenant,
-  with fallback. That's Phase 12.
+- ~~**No per-tenant connector chain.**~~ Resolved in Phase 12 — a tenant's `role` claim comes from
+  whatever its connector rows say (Acme's own web API, a claim on the token, or the old table), and
+  this host gained eleven lines to support all of it. What replaced it in this list is sharper: a
+  cascade **silently absorbs** a broken or mis-pointed connector, so an authorization-relevant claim
+  can downgrade with nothing reporting an error. Reproduced on purpose, not fixed — see the Phase 12
+  section and [`docs/architecture/connectors.md`](../../docs/architecture/connectors.md).
+- **No per-host circuit breaker on connector calls.** A tenant whose own system is down costs ~4.1s
+  per login for that tenant, measured. A breaker is the right tool and a *shared* one would be worse
+  than none (one tenant's outage opening the circuit for all of them), so the fix is one keyed on the
+  request host. New in Phase 12.
+- **Connector configuration can't be changed at runtime.** Phase 11 made *tenants* writable over
+  HTTP; Phase 12 did not do the same for their connectors, so onboarding a tenant's integration still
+  means a migration. The real `ConnectorManagementController` imports a desired-state document and
+  reconciles it.
 - **Real business data or logic behind the API.** SampleApi has exactly one endpoint
   that echoes claims — it exists to prove token validation works, not to be a real
   service. Also see its own README for its list of "deliberately missing."

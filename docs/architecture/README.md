@@ -1,6 +1,6 @@
 # Architecture
 
-**Current state of the system**, as of Phase 11. Cross-cutting docs live here — anything
+**Current state of the system**, as of Phase 12. Cross-cutting docs live here — anything
 that names more than one of this repo's projects.
 
 This is deliberately *not* a phase narrative. The per-project READMEs tell the story
@@ -12,9 +12,11 @@ right about the present. Don't "fix" a phase README to match.
 - **[service-to-service-auth.md](service-to-service-auth.md)** — the three ways a process proves who it
   is when there's no user: self-issued JWT, service-account token, Duende local API. Which to use, and
   which one can't be revoked.
+- **[connectors.md](connectors.md)** — where a tenant's user data comes from, decided by rows rather
+  than code: the catalog/choice/settings schema, the cascading chain rule, and the finding that a
+  cascade silently absorbs misconfiguration.
 
-Docs that arrive with the phases that need them: `connectors.md` (Phase 12),
-`external-role-providers.md` (Phase 14).
+Docs that arrive with the phases that need them: `external-role-providers.md` (Phase 14).
 
 ## The processes
 
@@ -25,7 +27,8 @@ Docs that arrive with the phases that need them: `connectors.md` (Phase 12),
 | [MvcClient](../../src/MvcClient) | 5006 | Server-side confidential client. Stands in for `Applications.Apply`. |
 | [SampleApi](../../src/SampleApi) | 5007 | JWT-bearer-protected API. Carries `Services.Authorization`'s identity conventions. |
 | [ReactSpa](../../src/ReactSpa) | 5173 | Browser public client. No secret, PKCE only. |
-| [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API. |
+| [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API, and since Phase 12 the connector machinery that decides where a tenant's users come from. |
+| [Mini.AcmeApi](../../src/Mini.AcmeApi) | 5014 | Acme Corporation's **own** user API. The first process here standing in for a system a *tenant* owns, not one the platform owns — a WebApi connector target. |
 | [ExternalServicesStub](../../src/ExternalServicesStub) | 5012 | **Superseded** by Mini.UserService in Phase 11. Kept, not started by default. |
 | [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10. |
 | [ConfigIngestionTool](../../src/Tools/ConfigIngestionTool) | — | Console tool. Writes config into the database. Run manually. |
@@ -61,7 +64,18 @@ to also start the superseded `ExternalServicesStub` for a side-by-side compariso
         ┌──────────────┐  ┌──────────────────────┐   │
         │  ExternalIdp │  │   Mini.UserService   │   │
         │    :5011     │  │        :5013         │   │
-        └──────────────┘  └──────────────────────┘   │
+        └──────────────┘  └───────────┬──────────┘   │
+                                      │              │
+                   service-account    │              │
+                   token, per tenant  │              │
+                   (userservice-svc.  │              │
+                    acme) + Origin    │              │
+                    UserIdentifier    ▼              │
+                          ┌──────────────────────┐   │
+                          │     Mini.AcmeApi     │   │
+                          │        :5014         │   │
+                          │  a TENANT's own API  │   │
+                          └──────────────────────┘   │
                                                      │
                 MvcClient/ReactSpa ──────────────────┘
 ```
@@ -83,10 +97,19 @@ to also start the superseded `ExternalServicesStub` for a side-by-side compariso
    it never calls back per request.
 
 4. **Service-account token.** A client-credentials grant against `:5001`, no user involved.
-   Three consumers as of Phase 11: MvcClient → `:5007` as `mvcclient-svc.{tenant}`,
-   Mini.UserService → `:5001` as `userservice-svc.{tenant}`, and operators → `:5013`'s
-   management API as `userservice-mgmt-svc`. `IIdentityContext` tells this caller apart
-   from a real user by the *absence* of a `sub` claim.
+   Four consumers as of Phase 12: MvcClient → `:5007` as `mvcclient-svc.{tenant}`,
+   Mini.UserService → `:5001` as `userservice-svc.{tenant}`, operators → `:5013`'s
+   management API as `userservice-mgmt-svc`, and — new in Phase 12 — Mini.UserService →
+   `:5014` as that *same* `userservice-svc.{tenant}`, because a WebApi connector
+   authenticates with the tenant's service account. `IIdentityContext` tells this caller
+   apart from a real user by the *absence* of a `sub` claim.
+
+   The fourth one is the first time a token in this repo is presented to a resource a
+   **tenant** owns rather than the platform. Acme validates it against `:5001`'s JWKS like
+   everything else, and then decides for itself: the `acmeapi` scope says which *resource*
+   the caller may reach, and `client_id` says whose *data* within it. All three
+   `userservice-svc.{tenant}` clients hold a token Acme accepts; only Acme's own gets past
+   its policy. See [connectors.md](connectors.md).
 
 Separately, and unlike all four: IdentityServerHost calls `:5013` during token issuance
 using a **self-issued JWT** (`IIdentityServerTools.IssueClientJwtAsync`), not a registered
@@ -124,6 +147,18 @@ MvcClient's own registry has never heard of them. That's left in place on purpos
 [Mini.Infrastructure's README](../../src/Mini.Infrastructure/README.md) for why sharing
 these would destroy the lesson rather than fix a bug.
 
+**Phase 12 added a fourth place a tenant's identity is written down**, and it is not a
+fourth registry — it is worse than that. The connector tables key on the tenant **GUID**,
+and because they live in a different `DbContext` from the `Tenants` table they cannot have
+a foreign key to it, so `CascadingConnectorDbContext` carries the three GUIDs as
+`HasData` literals. Two contexts in *one service* over *one database*, agreeing by
+convention. The registries at least have the excuse of being different processes.
+
+What keeps it honest is that nothing *resolves* a tenant from those literals: the endpoint
+looks the key up in `Tenants` (filtered on `IsActive`) and passes the GUID down, so a
+deactivated tenant cannot reach its connectors through a side door. The literals are only
+seed data — but they are seed data that will drift the moment a tenant's GUID does.
+
 **Phase 11 made the drift worse, deliberately.** The third registry moved from a
 `Dictionary` literal to a SQL table with a management API, so a tenant can now be onboarded
 there over HTTP with no code edit and no restart — while the other two still need a source
@@ -155,9 +190,15 @@ merge them; the full comparison table is in
 | `UserDbContext` | LocalDB `MiniIdG` | externally-provisioned identities (`ExternalUserStore`) |
 | `TestUsers` | memory | local passwords (alice, bob) — the real IdG has no local login at all |
 | `ServiceDbContext` | LocalDB **`MiniUsers`** | tenants (key → GUID) and user identity roles |
+| `CascadingConnectorDbContext` | LocalDB **`MiniUsers`** | the eight connector tables (Phase 12) — catalog, choice, settings |
+| `AcmeUsers` | memory | Acme's own employee directory, in `Mini.AcmeApi/Program.cs`. Not this repo's data at all — a `Dictionary` because it stands in for a system we don't own. |
 
-IdentityServerHost's three contexts share one database; `Mini.UserService`'s is a
-**separate** one, added in Phase 11. That separation is the substance of "database per
+IdentityServerHost's three contexts share one database; `Mini.UserService`'s two share a
+**separate** one — `MiniUsers`, added in Phase 11, with the connector tables joining it in
+Phase 12. Two contexts over one database means two migration histories: the connector one
+writes to `__EFMigrationsHistory_Connectors`, and the consequence in code is that
+`TenantId` in the connector tables is a bare `Guid` with no foreign key, since the
+`Tenants` table belongs to the other context. See [connectors.md](connectors.md). That separation is the substance of "database per
 service": before it, anything wanting a tenant's GUID could in principle have read it from
 a table in its own database. Now it cannot — the rows live somewhere it has no connection
 string for, so the only way to get them is to call the API. The constraint is enforced by

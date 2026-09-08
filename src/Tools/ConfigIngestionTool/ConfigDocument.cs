@@ -78,6 +78,19 @@ public class ClientDto
     public List<string> AllowedCorsOrigins { get; set; } = [];
     public List<string> AllowedScopes { get; set; } = [];
 
+    // Phase 12. Client claims — extra claims stamped onto every token a client gets, independent of
+    // any user. Added for one caller (userservice-claimprobe-svc, see IdentityServerConfig.json) and
+    // deliberately not for a family of them: the three fields together are the smallest set that can
+    // produce a bare "role" claim on a client-credentials token, which is what the Claim connector
+    // needs to be observable.
+    //
+    // ClientClaimsPrefix is nullable so that an ABSENT key keeps Duende's default ("client_") while an
+    // explicit empty string clears it. A plain string with a "" default would silently strip the prefix
+    // from every client in the file.
+    public string? ClientClaimsPrefix { get; set; }
+    public bool AlwaysSendClientClaims { get; set; }
+    public List<ClientClaimDto> Claims { get; set; } = [];
+
     public Client ToModel()
     {
         var client = new Client
@@ -90,8 +103,15 @@ public class ClientDto
             RedirectUris = RedirectUris,
             PostLogoutRedirectUris = PostLogoutRedirectUris,
             AllowedCorsOrigins = AllowedCorsOrigins,
-            AllowedScopes = AllowedScopes
+            AllowedScopes = AllowedScopes,
+            AlwaysSendClientClaims = AlwaysSendClientClaims,
+            Claims = Claims.Select(c => new ClientClaim(c.Type, c.Value)).ToList()
         };
+
+        if (ClientClaimsPrefix is not null)
+        {
+            client.ClientClaimsPrefix = ClientClaimsPrefix;
+        }
 
         // Hashed here, at ingestion time, exactly like Config.cs's own new Secret("...".Sha256()) used
         // to be — the JSON file (and this tool's console output) never carries the hash, only the
@@ -103,6 +123,14 @@ public class ClientDto
 
         return client;
     }
+}
+
+// Duende's ClientClaim has no parameterless constructor, so it can't be a bind target directly — this
+// is the two-property DTO the JSON binds to instead.
+public class ClientClaimDto
+{
+    public required string Type { get; set; }
+    public required string Value { get; set; }
 }
 
 // Phase 9: the fifth category. Unlike the four above, these rows aren't read by Duende's stock stores —

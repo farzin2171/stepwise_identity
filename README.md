@@ -23,7 +23,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 9. IdentityProviderStore (DB-persisted external-provider config) ✓
 10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
 11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
-12. Connectors (per-tenant, cascading user sources) ← next
+12. Connectors (per-tenant, cascading user sources) ✓
+13. Mini.AuthorizationService (the permission decision leaves the token) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -47,7 +48,12 @@ A mini Identity Gateway, built from scratch in phases that mirror
   sibling DIT microservices (a Tenant Management API and a User API) that IdentityServerHost
   calls at token-issuance time. Its own `MiniUsers` database, a service-account-gated
   management API, and a call *back* into IdentityServerHost — the dependency is bidirectional,
-  as it is in production. See its [README](src/Mini.UserService/README.md).
+  as it is in production. Phase 12 added the connector machinery that decides, per tenant, where a
+  user's data comes from. See its [README](src/Mini.UserService/README.md).
+- [src/Mini.AcmeApi](src/Mini.AcmeApi) — Phase 12's stand-in for a system a **tenant** owns rather
+  than one the platform owns: Acme Corporation's own user API, reached by a WebApi *connector* whose
+  host and routes are rows in SQL. The first process here that isn't ours. See its
+  [README](src/Mini.AcmeApi/README.md).
 - [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's hardcoded-dictionary
   version of the same thing, **superseded** in Phase 11 and kept for comparison, not deleted:
   the value of a phase course is the diff between phases. `.\run-all.ps1 -IncludeStub` starts
@@ -71,7 +77,10 @@ token moves, where state lives, and the three tenant registries that agree only 
 convention. Unlike the phase-by-phase READMEs, it describes the system as it is *now*. It now
 also carries
 [service-to-service-auth.md](docs/architecture/service-to-service-auth.md) — the three ways a
-process proves who it is when there's no user involved, and which one can't be revoked.
+process proves who it is when there's no user involved, and which one can't be revoked — and
+[connectors.md](docs/architecture/connectors.md), on where a tenant's user data comes from when
+that's decided by rows instead of code, including the finding that a cascading fallback chain
+silently absorbs a broken integration and quietly downgrades a `role` claim while doing it.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -179,11 +188,20 @@ Verification scripts (repo root):
   onboarded over HTTP with no restart, management refusing user and wrong-audience callers, the
   bidirectional call back into IdentityServerHost, and a genuinely ambiguous id conversion
   answering 409.
+- [`test-phase12.ps1`](test-phase12.ps1) — proves a tenant's user source is decided by *rows*, in
+  eight parts: Acme's own API refusing anonymous, wrong-audience and wrong-**tenant** callers; acme's
+  cascade answering out of Acme's HR system (with carol, who has no row anywhere here, as the proof);
+  the chain's *ordering* shown by one token being answered at position 2 and shadowed at position 1;
+  globex resolving to no connector at all despite an enabled choice row, because a lookup needs both
+  `IsEnabled` flags; the same misconfiguration silently absorbed by a cascade and surfaced as a 502
+  without one; and a real login carrying a `role` claim out of a system this repo doesn't own.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
-(`dotnet test`), added in Phase 11 for the two decision tables that a black-box HTTP script
-would document badly: identity conversion, and the identity-type rules every service now
-depends on.
+(`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would
+document badly: identity conversion, the identity-type rules every service now depends on,
+and — since Phase 12 — which connector serves a given tenant and what a cascading chain's
+outcome is. The connector-resolution tests run against the **shipped** seed rows, so they pin
+the decision table itself rather than only the code that reads it.
 
 None of the scripts drive real browser JavaScript — see
 [src/ReactSpa/README.md](src/ReactSpa/README.md) for why an actual click-through in a
@@ -199,4 +217,6 @@ README — since IdentityServerHost itself no longer seeds any Clients/Resources
 startup. As of Phase 11, `src/Mini.UserService` must also be running for any login to
 succeed (IdentityServerHost calls it during token issuance — it was
 `src/ExternalServicesStub` from Phase 7 until then), and it creates its own separate
-`MiniUsers` database on first run. `run-all.ps1` handles all of this ordering.
+`MiniUsers` database on first run. As of Phase 12, `src/Mini.AcmeApi` must be running too,
+or Acme users lose their `role` claim — the login still succeeds, silently, with `Member`
+instead. `run-all.ps1` handles all of this ordering.

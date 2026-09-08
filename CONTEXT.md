@@ -17,6 +17,10 @@ _Avoid_: Step, milestone, iteration.
 Nickname for this whole sample — `IdentityServerHost` plus the client apps that log
 into it (`MvcClient`, `ReactSpa`, `SampleApi`, `ExternalIdp`) — as a unit, distinct from
 the real production system.
+
+Note what Phase 12 put *outside* it: `Mini.AcmeApi` stands in for a system a **tenant** owns, so it
+lives in the repo without being part of the mini-IdG. That line matters the moment someone says
+"everything here validates tokens against `:5001`" — Acme does too, and it still isn't ours.
 _Avoid_: "this sample" alone when the distinction from the real IdG matters.
 
 **real IdG**:
@@ -73,7 +77,16 @@ so an Initech user can log in at IdentityServerHost and then be rejected by MvcC
 Phase 11 made it **asymmetric** as well as live: the third registry can now be written over
 HTTP (`POST /api/v1/management/tenants`) with no code edit and no restart, while the other two
 still need a source change and a redeploy. Before, all three drifted at the same slow speed.
-_Avoid_: "the tenant list" — there isn't one.
+
+Phase 12 added a **fourth place a tenant's identity is written down**, which is not a fourth registry
+and is arguably worse: `CascadingConnectorDbContext` carries the three tenant GUIDs as `HasData`
+literals, because the `Tenants` table lives in a different `DbContext` and a foreign key is therefore
+impossible. Two contexts, one service, one database, agreeing by convention. Nothing *resolves* a
+tenant from those literals — the endpoint looks the key up in `Tenants` filtered on `IsActive` and
+passes the GUID down, so a deactivated tenant cannot reach its connectors through a side door — but
+they will drift the moment a tenant's GUID does.
+_Avoid_: "the tenant list" — there isn't one. And don't count the connector tables as a registry:
+they say what a known tenant uses, never which tenants exist.
 
 **Tenants.cs**:
 The hardcoded tenant-key → display-name dictionary (plus `ResolveTenantKey`, parsing
@@ -144,6 +157,12 @@ server-to-server calls with no user or browser involved — ported from `Apply`'
 
 Phase 11 added four: `userservice-svc.{acme,globex,initech}` (Mini.UserService calling back into
 IdentityServerHost) and `userservice-mgmt-svc` (writing to Mini.UserService's management API).
+
+Phase 12 gave all three `userservice-svc.*` clients the `acmeapi` scope as well, because a `WebApi`
+`Connector` authenticates with the tenant's service account — the real mechanism, not an invention.
+Two consequences worth holding onto: one cached token now serves two callees (`TokenClient` requests
+no scope, so a token carries every scope its client is allowed), and *all three* tenants hold a token
+`Mini.AcmeApi` accepts, so its own `client_id` policy is what actually keeps Initech out.
 The last one has NO tenant suffix, on purpose — creating a tenant is inherently cross-tenant,
 so `IIdentityContext` resolves its `TenantKey` to null. This sample's suffix convention cannot
 express "all tenants" as distinct from "none"; the real `DIT.Identity` reads an explicit
@@ -206,6 +225,14 @@ The claim `UserClient` adds, holding whatever `Mini.UserService` returns for a
 subject id — never cached. Exists purely to contrast with `tenant_guid`'s cached (and
 deliberately broken) lookup; not a real permissions/roles system.
 
+**Where it comes from changed in Phase 12** while the claim did not: `UserClient` now sends
+`?tenant=`, and `Mini.UserService` resolves the value through that tenant's `Connector` chain instead
+of reading one table. For `acme` it comes out of `Mini.AcmeApi`; for `globex`, still the
+`UserIdentityRoles` table; for anyone whose chain answers nothing, the `"Member"` fallback. Nothing in
+`IdentityServerHost` knows which.
+_Avoid_: reading a `role` claim as authoritative — a cascade that fails silently downgrades it to
+`"Member"`, and nothing reports an error (see `Connector`).
+
 **ExternalServicesStub**:
 Phase 7's stand-in for the real IdG's two sibling DIT microservices (Tenant Management API,
 User API), collapsed into one process, each route backed by a `Dictionary` literal. Validates
@@ -228,6 +255,12 @@ as separate authorization policies, so the boundary two deployments would enforc
 written down. Adds two things the stub had no version of: a service-account-gated management
 API (a tenant can be onboarded over HTTP, no code edit) and an outbound call back into
 IdentityServerHost.
+
+Phase 12 made it the service that decides **where a tenant's user data comes from**, via the
+`Connector` machinery in `Connectors/` and a third route (`GET /api/v2/User/identities/email`). The
+`role` route gained an *optional* `?tenant=` parameter, and optional is load-bearing: omitting it is
+the pre-Phase-12 path, which is what lets `test-phase7.ps1` and `test-phase11.ps1` keep exercising
+the local table unchanged.
 _Avoid_: "the user service" unqualified when the real `Services.User` is also in scope — and
 don't call it a port of `Services.User` alone, since half of it is `Services.TenantManagement`.
 
@@ -236,6 +269,11 @@ don't call it a port of `Services.User` alone, since half of it is `Services.Ten
 IdentityServerHost's three contexts share. The separation is the point of Phase 11: no other
 process has a connection string for it, so "database per service" is enforced by the absence
 of a credential rather than by convention.
+
+Holds **two** contexts as of Phase 12 — `ServiceDbContext` and `CascadingConnectorDbContext` — with
+separate migration histories (`__EFMigrationsHistory` and `__EFMigrationsHistory_Connectors`). The
+separation is hygiene, not crash avoidance: sharing one table was tested and works fine, which is the
+opposite of what it looks like.
 _Avoid_: assuming `MiniAuthorization` exists — it arrives with `Mini.AuthorizationService`,
 not in Phase 11, despite a Phase 10 note that said otherwise.
 
@@ -266,6 +304,74 @@ service account. See
 [`docs/architecture/service-to-service-auth.md`](docs/architecture/service-to-service-auth.md).
 _Avoid_: calling it a service-account token — the distinction (revocable vs not) is the whole
 reason both exist.
+
+**Connector**:
+An integration *type* that can serve an extension point for a tenant — `WebApi`, `AzureGraph` or
+`Claim`, one row each in `Mini.UserService`'s `Connectors` table. Ported in Phase 12 from
+`DIT.Connectors`. `WebApi` and `Claim` work here; `AzureGraph` is a catalog row whose dispatcher
+answers "not implemented in this sample."
+
+The word names a *type*, never a configured instance and never the target system. Acme's own API is a
+**connector target** (`Mini.AcmeApi`); the rows that point at it are a **connector configuration**.
+_Avoid_: "the connector for acme" — say which handler, since a tenant has one per extension point.
+Also don't use it for an external *identity* provider: a `Dynamic provider` is a login source, a
+connector is a data source, and neither is involved in the other's job.
+
+**Handler**:
+An extension point a connector can serve — a row in `Handlers` plus an `ActionHandlerBase` subclass
+that knows how to dispatch it. Two exist: `GetUserRole` (cascading for `acme` and `initech`) and
+`GetUserByEmail` (never cascading, which is why it exists — it is the only place a connector failure
+is allowed to be fatal).
+_Avoid_: "endpoint" — the HTTP route and the handler are different things, and one route can resolve
+to a different connector per tenant.
+
+**Catalog / choice / settings**:
+The three layers of the connector schema, and the reason it is eight tables rather than one.
+*Catalog* (`Connectors`, `Handlers`, `ConnectorHandlers`) says what is possible; *choice*
+(`ConnectorHandlerTenants`, `ConnectorHandlerCascadingTenants`) says what a tenant picked; *settings*
+(`WebApiConnectorConfigurations` + `…Routes`, `ClaimConnectorConfigurations`) says where to go. Real
+`DIT.Connectors` wording, kept verbatim because the split is the design: onboarding a tenant touches
+choice and settings only, adding an integration type touches the catalog only.
+
+**Cascading connector chain**:
+An ordered list of connectors for one (tenant, handler), tried in `Order` until one answers — the
+`ConnectorHandlerCascadingTenants` table, which exists only in the user service's context in the real
+library too.
+
+The rule that gives the word meaning, and this sample's own reading rather than a verified port (the
+real ordering is documented as living inside the DIT library): **a cascade absorbs failures, a single
+connector's failure surfaces.** A chain that runs out reports "no value," not an error.
+
+Its cost is reproduced deliberately: a cascade **silently absorbs misconfiguration**. `initech`'s
+`WebApiConnectorConfiguration.Host` names Acme's host, Acme answers 403, the chain moves on, and every
+Initech user quietly becomes `"Member"` with HTTP 200. The identical fault on `GetUserByEmail` answers
+502, because nothing is configured behind it.
+_Avoid_: "fallback" alone — it hides which of the two behaviours is meant, and they differ by exactly
+one row.
+
+**Two IsEnabled flags**:
+A connector lookup succeeds only when the tenant's own choice row AND the base `ConnectorHandlers`
+pairing are both enabled. A kill switch at two levels, so an integration can be withdrawn from
+everyone or from one client without deleting anybody's configuration.
+
+`globex` is the live demonstration: it has an *enabled* choice row picking `AzureGraph`, the base
+pairing is disabled, so it resolves to nothing and is still served by the `UserIdentityRoles` table.
+Same "two indistinguishable causes for a vanished feature" shape as
+`DynamicIdentityProviderEnabled` above.
+
+**Mini.AcmeApi**:
+Acme Corporation's own user API (`:5014`), added in Phase 12 — the first process in this repo standing
+in for a system a **tenant** owns rather than one the platform owns. A `WebApi` connector target,
+reached with the per-tenant service-account token (`userservice-svc.acme`) plus an
+`OriginUserIdentifier` header.
+
+Deliberately carries none of this repo's conventions (no `IIdentityContext`, no `ProblemDetails`, no
+versioned routes, a `Dictionary` for storage) because applying them would imply Acme builds services
+the way DIT does. What it does have is an authorization policy on `client_id`: all three
+`userservice-svc.{tenant}` clients hold a token it *accepts*, and only Acme's own gets past — a scope
+says which resource, never whose data within it.
+_Avoid_: calling it a stub or a stand-in for a DIT service. `ExternalServicesStub` stood in for *our*
+services; this stands in for a client's.
 
 **KeyManagement:Provider**:
 The config value (`"Developer"` or `"AzureKeyVault"`) `SigningKeyExtensions.AddSigningKey`

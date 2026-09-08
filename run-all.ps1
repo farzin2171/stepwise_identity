@@ -41,6 +41,13 @@ $services = @(
     @{ Name = "IdentityServerHost"; Project = "src/IdentityServerHost"; Url = "https://localhost:5001" }
     @{ Name = "SampleApi";          Project = "src/SampleApi";          Url = "https://localhost:5007" }
     @{ Name = "Mini.UserService";   Project = "src/Mini.UserService";   Url = "https://localhost:5013" }
+    # Phase 12. Acme's OWN user API - a WebApi connector target, and the first process in this repo
+    # that stands in for a system a TENANT owns rather than one the platform owns. It is in the default
+    # set because it is now on the login path for acme: Mini.UserService resolves acme's role claim
+    # through a connector pointed here, so with this process down, alice's role silently falls back to
+    # "Member" and test-phase7.ps1 fails. That is not fragility to work around - it is what taking a
+    # dependency on a tenant's own system actually costs, and it is worth seeing.
+    @{ Name = "Mini.AcmeApi";       Project = "src/Mini.AcmeApi";       Url = "https://localhost:5014" }
     @{ Name = "MvcClient";          Project = "src/MvcClient";          Url = "https://localhost:5006" }
 )
 
