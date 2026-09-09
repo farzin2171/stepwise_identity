@@ -20,6 +20,12 @@
     { "name": "tenantmgntapi", "displayName": "Tenant registry" },
     { "name": "userapi", "displayName": "User identities and roles" },
 
+    // Phase 12. Acme Corporation's own user API (../Mini.AcmeApi, :5014) — a WebApi connector target,
+    // i.e. a third-party system this repo does not own, reached by Mini.UserService on a tenant's
+    // behalf. Registered here because Acme validates tokens against THIS host's JWKS: the DIT platform
+    // is the issuer even when the resource belongs to the tenant.
+    { "name": "acmeapi", "displayName": "Acme Corporation's own user API" },
+
     // Phase 11. Duende's own reserved scope name for an API hosted INSIDE the IdentityServer process
     // (IdentityServerConstants.LocalApi.ScopeName). Requesting it is what gets a token past
     // Controllers/UserConversionController.cs's [Authorize(LocalApi.PolicyName)]. Deliberately has no
@@ -49,6 +55,15 @@
       "name": "userapi",
       "displayName": "User identities and roles (Mini.UserService)",
       "scopes": [ "userapi" ]
+    },
+
+    // Phase 12. Same reason as the two above: without an apiResource of the same name, the "acmeapi"
+    // scope alone would land in Duende's default "{issuer}/resources" audience and Mini.AcmeApi's
+    // ValidAudiences check would reject every connector call.
+    {
+      "name": "acmeapi",
+      "displayName": "Acme Corporation's own user API",
+      "scopes": [ "acmeapi" ]
     }
   ],
 
@@ -92,26 +107,38 @@
     // secret up per tenant — so revoking Initech's service-account access never touches Acme's. Real
     // counterpart: Services.User's "ServiceAccounts:*" configuration.
     //
-    // All three ask only for "IdentityServerApi" — Duende's local-API scope. That is the whole grant:
-    // these clients can convert user ids and nothing else. They cannot call SampleApi (no "api1") and
-    // they cannot write to Mini.UserService (no "tenantmgntapi"/"userapi").
+    // These asked only for "IdentityServerApi" — Duende's local-API scope — until Phase 12 added
+    // "acmeapi" to all three, because the same service account is what a WebApi connector authenticates
+    // with (dit-architecture, Services.User: "connector calls to the custom web APIs carry that
+    // token"). So the grant is now: convert user ids, and call Acme's API.
+    //
+    // Note that ALL THREE get "acmeapi", including Globex's and Initech's, which have no business
+    // calling Acme. That is not an oversight — it is what makes Mini.AcmeApi's own authorization
+    // policy load-bearing rather than decorative. A scope says which RESOURCE a client may reach; it
+    // cannot say which tenant's data within it. Initech's deliberately mis-pointed connector row gets a
+    // perfectly valid "acmeapi" token and is refused by Acme on the strength of its client_id alone.
+    // See Mini.AcmeApi/Program.cs.
+    //
+    // Also note what TokenClient does with them: it requests no scope at all, so each token carries
+    // every scope its client is allowed, and ONE cached token is used for both callees. A real
+    // deployment would want a service account per integration. See the README's Phase 12 section.
     {
       "clientId": "userservice-svc.acme",
       "clientSecret": "acme-userservice-secret",
       "allowedGrantTypes": [ "client_credentials" ],
-      "allowedScopes": [ "IdentityServerApi" ]
+      "allowedScopes": [ "IdentityServerApi", "acmeapi" ]
     },
     {
       "clientId": "userservice-svc.globex",
       "clientSecret": "globex-userservice-secret",
       "allowedGrantTypes": [ "client_credentials" ],
-      "allowedScopes": [ "IdentityServerApi" ]
+      "allowedScopes": [ "IdentityServerApi", "acmeapi" ]
     },
     {
       "clientId": "userservice-svc.initech",
       "clientSecret": "initech-userservice-secret",
       "allowedGrantTypes": [ "client_credentials" ],
-      "allowedScopes": [ "IdentityServerApi" ]
+      "allowedScopes": [ "IdentityServerApi", "acmeapi" ]
     },
 
     // Phase 11. The service account that WRITES to Mini.UserService's management API — creating a
@@ -126,6 +153,34 @@
       "clientSecret": "userservice-mgmt-secret",
       "allowedGrantTypes": [ "client_credentials" ],
       "allowedScopes": [ "tenantmgntapi", "userapi" ]
+    },
+
+    // Phase 12. A test fixture, and labelled as one rather than dressed up as a production shape: the
+    // only client in this file whose reason to exist is a test assertion.
+    //
+    // The Claim connector reads a claim named by a database row off the CALLER's token. Every real
+    // caller of this service's role endpoint is either the IdG's self-issued JWT or a service account,
+    // and none of them carries a "role" claim — the user whose role is being looked up is not the
+    // caller (see Mini.UserService/Connectors/ClaimConnector.cs). So on the login path the claim
+    // connector correctly produces nothing, every time.
+    //
+    // That leaves two indistinguishable explanations for Acme's cascade ending in "Member": the chain
+    // reached position 2 and found no claim, or it never got there at all. This client separates them.
+    // It carries a "role" client claim, so calling the same endpoint with ITS token makes the claim
+    // connector answer — and test-phase12.ps1 asserts the value, which can only have come from
+    // position 2 of the chain.
+    //
+    // clientClaimsPrefix is emptied on purpose: Duende prefixes client claims with "client_" by
+    // default, and a ClaimConnectorConfiguration row saying "role" would then find nothing on a token
+    // carrying "client_role" — which would reproduce the very ambiguity this client exists to remove.
+    {
+      "clientId": "userservice-claimprobe-svc",
+      "clientSecret": "userservice-claimprobe-secret",
+      "allowedGrantTypes": [ "client_credentials" ],
+      "allowedScopes": [ "userapi" ],
+      "clientClaimsPrefix": "",
+      "alwaysSendClientClaims": true,
+      "claims": [ { "type": "role", "value": "UnderwriterFromClaim" } ]
     }
   ],
 

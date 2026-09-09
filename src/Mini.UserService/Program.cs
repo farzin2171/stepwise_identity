@@ -5,6 +5,8 @@ using Microsoft.Extensions.Options;
 using Mini.Infrastructure.ExternalServices;
 using Mini.Infrastructure.Http;
 using Mini.Infrastructure.Identity;
+using Mini.UserService.Connectors;
+using Mini.UserService.Connectors.Data;
 using Mini.UserService.Data;
 using Mini.UserService.Endpoints;
 using Mini.UserService.ExternalServices;
@@ -113,6 +115,13 @@ builder.Services.AddHttpClient("token")
        .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 
 builder.Services.AddScoped<IdentityGatewayClient>();
+
+// Phase 12. Real counterpart: services.AddDigitalInsuranceTools(Configuration).AddConnectors() — the
+// runtime read side of DIT.Connectors. One call, and the role lookup stops being "one table for
+// everybody" and starts being "whatever this tenant's rows say." See Connectors/ConnectorsExtensions.cs
+// for what it registers and why the second DbContext needs its own migrations-history table.
+builder.Services.AddConnectors(builder.Configuration);
+
 builder.Services.AddProblemDetails();
 
 var app = builder.Build();
@@ -122,9 +131,15 @@ var app = builder.Build();
 // IdentityServerHost's SeedData.EnsureDatabasesMigrated, so run-all.ps1 needs no extra step for this
 // service. Unlike Phase 6's ingestion split, there is no separate config document to load: the
 // baseline reference data travels in the migration itself.
+//
+// Phase 12: two contexts now, migrated one after the other. They share the database and the
+// connection string and keep separate migration histories — see Connectors/ConnectorsExtensions.cs
+// for the MigrationsHistoryTable that does that, and why it is hygiene rather than the crash
+// prevention it looks like.
 using (var scope = app.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<ServiceDbContext>().Database.Migrate();
+    scope.ServiceProvider.GetRequiredService<CascadingConnectorDbContext>().Database.Migrate();
 }
 
 app.UseExceptionHandler();

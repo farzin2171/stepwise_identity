@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.7" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
@@ -17,10 +18,12 @@
   <ItemGroup>
     <!-- The SINGLE test project for the whole repo, per the phase conventions — it references whichever
          projects hold logic worth a table, and grows as phases add branches. Today that's
-         IdentityServerHost (Phase 11's id conversion) and Mini.Infrastructure (the identity-type rules
-         every service in this repo now depends on). -->
+         IdentityServerHost (Phase 11's id conversion), Mini.Infrastructure (the identity-type rules
+         every service in this repo now depends on) and Mini.UserService (Phase 12's two connector
+         decision tables: which connector serves this tenant, and what a chain's outcome is). -->
     <ProjectReference Include="..\..\src\IdentityServerHost\IdentityServerHost.csproj" />
     <ProjectReference Include="..\..\src\Mini.Infrastructure\Mini.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Mini.UserService\Mini.UserService.csproj" />
   </ItemGroup>
 
   <ItemGroup>

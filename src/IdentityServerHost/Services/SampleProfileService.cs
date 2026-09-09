@@ -54,7 +54,19 @@ public class SampleProfileService(
 
         // Deliberately NOT cached — the direct contrast to tenant_guid above, and to the real system's
         // own UserClient, which is also never cached. See UserClient.cs.
-        enrichedClaims.Add(new Claim("role", await userClient.GetRoleAsync(subjectId, ct)));
+        //
+        // Phase 12 passes tenantKey along. Not because this host gained any new logic — it gained
+        // none — but because Mini.UserService's connector configuration is per-tenant and the
+        // self-issued JWT this call carries has no tenant claim for the callee to read (CONTEXT.md,
+        // "Self-issued JWT"). So the caller has to name the tenant, exactly as it already does on the
+        // conversion endpoint. Null when the login had no tenant hint at all (test-phase3.ps1 §4),
+        // and null means the callee uses its pre-Phase-12 path.
+        //
+        // Worth noticing what this line does NOT do: nothing here knows that acme's roles now come
+        // from Acme's own web API and globex's still come from a table. The whole decision moved
+        // behind an HTTP call, which is the difference between "the IdG supports per-tenant user
+        // sources" and "the IdG has an if-statement per tenant."
+        enrichedClaims.Add(new Claim("role", await userClient.GetRoleAsync(subjectId, tenantKey, ct)));
 
         context.AddRequestedClaims(enrichedClaims);
     }
