@@ -392,3 +392,18 @@ _Avoid_: assuming this was verified against a real vault in this environment —
 (see [`docs/azure-key-vault-setup.md`](src/IdentityServerHost/docs/azure-key-vault-setup.md)).
 What *was* verified: the dispatcher genuinely activates this store and makes a real
 network attempt when configured, rather than silently falling back to the developer key.
+
+**Mini.AuthorizationService**:
+Phase 13's authorization decision service (`:5015`), separate from the token. Until now, everything
+in this repo — the `role` claim, every permission decision — lived *inside* the JWT token. For decisions
+that need to change without re-issuing tokens, or for policies that are too expensive to compute at
+every login, or for policies that need context beyond what fits in a claim, a separate service emerges:
+the resource server calls back to ask "am I authorized for this?" at request time.
+
+The service accepts bearer tokens and evaluates policies against the caller's identity and context.
+Policies are stored per-tenant, in rows (not code), so a policy can be changed in SQL without a restart.
+Each policy names a resource, describes who can access it (currently role-based; claim-based is a stub),
+and in what order to check if multiple policies apply.
+
+Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase 14 will wire it into the
+login path so SampleApi actually calls it. See [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).

@@ -1,0 +1,6 @@
+@Mini.AuthorizationService_HostAddress = http://localhost:5139
+
+GET {{Mini.AuthorizationService_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

@@ -18,7 +18,8 @@ actually is under all its production scaffolding.
 10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
 11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
 12. Connectors (per-tenant, cascading user sources) ✓
-13. Mini.AuthorizationService (the permission decision leaves the token) ← next
+13. Mini.AuthorizationService (the permission decision leaves the token) ✓
+14. (authorization integration — IdentityServerHost/SampleApi call the authorization service) ← next
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are

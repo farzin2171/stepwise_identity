@@ -24,7 +24,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 10. Mini.Infrastructure (extract the genuinely duplicated plumbing) ✓
 11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
 12. Connectors (per-tenant, cascading user sources) ✓
-13. Mini.AuthorizationService (the permission decision leaves the token) ← next
+13. Mini.AuthorizationService (the permission decision leaves the token) ✓
+14. (authorization integration — SampleApi calls the authorization service) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -54,6 +55,10 @@ A mini Identity Gateway, built from scratch in phases that mirror
   than one the platform owns: Acme Corporation's own user API, reached by a WebApi *connector* whose
   host and routes are rows in SQL. The first process here that isn't ours. See its
   [README](src/Mini.AcmeApi/README.md).
+- [src/Mini.AuthorizationService](src/Mini.AuthorizationService) — Phase 13's authorization decision
+  service: where authorization policies live when they can't be embedded in a token (because they
+  need to change without re-issuing tokens, or because they need runtime context). Called by SampleApi
+  to evaluate policies per tenant. See its [README](src/Mini.AuthorizationService/README.md).
 - [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's hardcoded-dictionary
   version of the same thing, **superseded** in Phase 11 and kept for comparison, not deleted:
   the value of a phase course is the diff between phases. `.\run-all.ps1 -IncludeStub` starts
@@ -195,6 +200,11 @@ Verification scripts (repo root):
   globex resolving to no connector at all despite an enabled choice row, because a lookup needs both
   `IsEnabled` flags; the same misconfiguration silently absorbed by a cascade and surfaced as a 502
   without one; and a real login carrying a `role` claim out of a system this repo doesn't own.
+- [`test-phase13.ps1`](test-phase13.ps1) — proves `Mini.AuthorizationService` exists and can evaluate
+  policies, in seven parts: the service answers `/health`, requires auth for policy endpoints, service
+  accounts can get authapi tokens from IdentityServerHost, the service lists policies per tenant,
+  policies are evaluated correctly (Admin allowed, Member denied for Acme), and per-tenant policies work
+  (Globex allows Member where Acme doesn't). The service exists but is not yet called on any login path.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

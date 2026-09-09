@@ -26,6 +26,10 @@
     // is the issuer even when the resource belongs to the tenant.
     { "name": "acmeapi", "displayName": "Acme Corporation's own user API" },
 
+    // Phase 13. Mini.AuthorizationService (:5015) — the authorization decision service. Called by
+    // SampleApi (and eventually IdentityServerHost during token issuance) to evaluate policies.
+    { "name": "authapi", "displayName": "Authorization evaluation" },
+
     // Phase 11. Duende's own reserved scope name for an API hosted INSIDE the IdentityServer process
     // (IdentityServerConstants.LocalApi.ScopeName). Requesting it is what gets a token past
     // Controllers/UserConversionController.cs's [Authorize(LocalApi.PolicyName)]. Deliberately has no
@@ -64,6 +68,14 @@
       "name": "acmeapi",
       "displayName": "Acme Corporation's own user API",
       "scopes": [ "acmeapi" ]
+    },
+
+    // Phase 13. Mini.AuthorizationService (:5015) — same reason as the above: the "authapi" scope
+    // needs an apiResource so it lands in "authapi" audience, not the default "{issuer}/resources".
+    {
+      "name": "authapi",
+      "displayName": "Authorization evaluation",
+      "scopes": [ "authapi" ]
     }
   ],
 
