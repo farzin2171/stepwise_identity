@@ -22,6 +22,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 
 builder.Services.AddAuthorization();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<IIdentityContext>(sp =>
+{
+    var httpContext = sp.GetRequiredService<IHttpContextAccessor>().HttpContext;
+    var ctx = new Mini.Infrastructure.Identity.IdentityContext();
+    ctx.Populate(httpContext?.User ?? new System.Security.Claims.ClaimsPrincipal());
+    return ctx;
+});
 
 var app = builder.Build();
 

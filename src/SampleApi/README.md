@@ -175,6 +175,38 @@ endpoints above with each — see
 [`docs/identity-context-and-conventions.md`](docs/identity-context-and-conventions.md#running-it)
 for exactly what it proves.
 
+## Phase 14 — authorization decisions as a service
+
+Phase 14 adds a new `POST /api/v1/authorize/{resourceName}` endpoint that calls
+**Mini.AuthorizationService** (:5015) to evaluate policies. Instead of reading the
+`role` claim out of the token to make authorization decisions, the API now asks a
+separate service: "is this caller authorized for this resource, given their identity
+and request context?"
+
+The endpoint is identical in shape to the real `Services.Authorization`'s `Evaluate`:
+caller identity is extracted from the token (claims-only), the service looks up that
+tenant's policies, and returns an authorization decision. Authorization can now change
+without re-issuing tokens — update a policy row in the database, and the next request
+gets the new decision.
+
+Concretely: Phase 13 added Mini.AuthorizationService as a proof-of-concept. Phase 14
+integrates it, so now `POST /api/v1/authorize/sample-api` with a valid token will:
+
+1. Extract the caller's identity from the bearer token
+2. Call Mini.AuthorizationService's `/api/v1/authorization/evaluate` endpoint
+3. Pass the tenant key, resource name, and the caller's role
+4. Return a structured response: `{ "authorized": true/false, "reason": "..." }`
+
+The real `Services.Authorization` holds policies in SQL + Redis and serves both an
+`Authorize` endpoint (policy-by-name lookup) and an `Evaluate` endpoint (free-form
+context). This sample holds policies per resource per tenant and has one endpoint.
+
+Backward compatibility: The `/identity` and `/admin/cache` endpoints are unchanged,
+still working exactly as before. The authorization service is opt-in — calling it is a
+deliberate choice per request. Phase 15 might move it into the request pipeline so
+*every* authorization check goes through it; this phase leaves it as a separate
+endpoint you can call when you need an authorization decision that can live outside the token.
+
 ## What's deliberately missing (and why)
 
 - **Any real business data.** One endpoint, no database, no domain logic — this project

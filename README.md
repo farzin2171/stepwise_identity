@@ -25,7 +25,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 11. Mini.UserService (a real service replaces ExternalServicesStub) ✓
 12. Connectors (per-tenant, cascading user sources) ✓
 13. Mini.AuthorizationService (the permission decision leaves the token) ✓
-14. (authorization integration — SampleApi calls the authorization service) ← next
+14. (authorization integration — SampleApi calls the authorization service) ✓
+15. (persist authorization decisions across restarts) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -205,6 +206,11 @@ Verification scripts (repo root):
   accounts can get authapi tokens from IdentityServerHost, the service lists policies per tenant,
   policies are evaluated correctly (Admin allowed, Member denied for Acme), and per-tenant policies work
   (Globex allows Member where Acme doesn't). The service exists but is not yet called on any login path.
+- [`test-phase14.ps1`](test-phase14.ps1) — proves SampleApi is integrated with Mini.AuthorizationService,
+  in six parts: the new `/authorize/{resourceName}` endpoint requires authentication, both Acme and Globex
+  users can log in (regression test), the authorization service is called and returns per-tenant decisions,
+  the `/identity` endpoint still works (regression), and service accounts can call the authorize endpoint.
+  Authorization decisions now come from the service, not just the token.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would
