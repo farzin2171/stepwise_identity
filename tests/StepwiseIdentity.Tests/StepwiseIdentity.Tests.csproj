@@ -19,11 +19,13 @@
     <!-- The SINGLE test project for the whole repo, per the phase conventions — it references whichever
          projects hold logic worth a table, and grows as phases add branches. Today that's
          IdentityServerHost (Phase 11's id conversion), Mini.Infrastructure (the identity-type rules
-         every service in this repo now depends on) and Mini.UserService (Phase 12's two connector
-         decision tables: which connector serves this tenant, and what a chain's outcome is). -->
+         every service in this repo now depends on), Mini.UserService (Phase 12's two connector
+         decision tables: which connector serves this tenant, and what a chain's outcome is) and
+         Mini.AuthorizationService (Phase 15's decision-cache expiry rule). -->
     <ProjectReference Include="..\..\src\IdentityServerHost\IdentityServerHost.csproj" />
     <ProjectReference Include="..\..\src\Mini.Infrastructure\Mini.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Mini.UserService\Mini.UserService.csproj" />
+    <ProjectReference Include="..\..\src\Mini.AuthorizationService\Mini.AuthorizationService.csproj" />
   </ItemGroup>
 
   <ItemGroup>

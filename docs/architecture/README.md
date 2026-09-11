@@ -1,6 +1,6 @@
 # Architecture
 
-**Current state of the system**, as of Phase 12. Cross-cutting docs live here — anything
+**Current state of the system**, as of Phase 15. Cross-cutting docs live here — anything
 that names more than one of this repo's projects.
 
 This is deliberately *not* a phase narrative. The per-project READMEs tell the story
@@ -29,6 +29,7 @@ Docs that arrive with the phases that need them: `external-role-providers.md` (P
 | [ReactSpa](../../src/ReactSpa) | 5173 | Browser public client. No secret, PKCE only. |
 | [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API, and since Phase 12 the connector machinery that decides where a tenant's users come from. |
 | [Mini.AcmeApi](../../src/Mini.AcmeApi) | 5014 | Acme Corporation's **own** user API. The first process here standing in for a system a *tenant* owns, not one the platform owns — a WebApi connector target. |
+| [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14). Own database: per-tenant `Policies`, and since Phase 15 a persisted `CachedDecisions` table. |
 | [ExternalServicesStub](../../src/ExternalServicesStub) | 5012 | **Superseded** by Mini.UserService in Phase 11. Kept, not started by default. |
 | [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10. |
 | [ConfigIngestionTool](../../src/Tools/ConfigIngestionTool) | — | Console tool. Writes config into the database. Run manually. |
@@ -192,6 +193,7 @@ merge them; the full comparison table is in
 | `ServiceDbContext` | LocalDB **`MiniUsers`** | tenants (key → GUID) and user identity roles |
 | `CascadingConnectorDbContext` | LocalDB **`MiniUsers`** | the eight connector tables (Phase 12) — catalog, choice, settings |
 | `AcmeUsers` | memory | Acme's own employee directory, in `Mini.AcmeApi/Program.cs`. Not this repo's data at all — a `Dictionary` because it stands in for a system we don't own. |
+| `AuthorizationDbContext` | LocalDB **`MiniAuthorization`** | per-tenant `Policies` (Phase 13), and since Phase 15 `CachedDecisions` — one row per (tenant, caller, resource, context), with a TTL. |
 
 IdentityServerHost's three contexts share one database; `Mini.UserService`'s two share a
 **separate** one — `MiniUsers`, added in Phase 11, with the connector tables joining it in

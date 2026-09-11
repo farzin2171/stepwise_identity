@@ -138,19 +138,19 @@
       "clientId": "userservice-svc.acme",
       "clientSecret": "acme-userservice-secret",
       "allowedGrantTypes": [ "client_credentials" ],
-      "allowedScopes": [ "IdentityServerApi", "acmeapi" ]
+      "allowedScopes": [ "IdentityServerApi", "acmeapi", "authapi" ]
     },
     {
       "clientId": "userservice-svc.globex",
       "clientSecret": "globex-userservice-secret",
       "allowedGrantTypes": [ "client_credentials" ],
-      "allowedScopes": [ "IdentityServerApi", "acmeapi" ]
+      "allowedScopes": [ "IdentityServerApi", "acmeapi", "authapi" ]
     },
     {
       "clientId": "userservice-svc.initech",
       "clientSecret": "initech-userservice-secret",
       "allowedGrantTypes": [ "client_credentials" ],
-      "allowedScopes": [ "IdentityServerApi", "acmeapi" ]
+      "allowedScopes": [ "IdentityServerApi", "acmeapi", "authapi" ]
     },
 
     // Phase 11. The service account that WRITES to Mini.UserService's management API — creating a

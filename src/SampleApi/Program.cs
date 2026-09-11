@@ -48,10 +48,6 @@ builder.Services.AddScoped<IIdentityContext, IdentityContext>();
 // that can change without re-issuing tokens.
 builder.Services.AddScoped<IAuthorizationClient>(services =>
 {
-    var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
-    var httpClient = httpClientFactory.CreateClient();
-    httpClient.BaseAddress = new Uri("https://localhost:5015");
-
     // Local teaching sample only: accept self-signed certificates from localhost:5015
     var handler = new HttpClientHandler();
     handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
@@ -153,7 +149,12 @@ api.MapPost("/authorize/{resourceName}", async (
         { "caller", identityContext.IdentityType.ToString() }
     };
 
-    var result = await authzClient.EvaluateAsync(resourceName, identityContext, context);
+    // Forward this request's own bearer token as-is — Mini.AuthorizationService needs the real
+    // caller's identity (subject, tenant) to evaluate per-tenant policies, which a generic
+    // service-to-service credential wouldn't carry. That's why Mini.AuthorizationService accepts
+    // this token's "api1" audience alongside "authapi" (see its Program.cs).
+    var inboundToken = ctx.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    var result = await authzClient.EvaluateAsync(resourceName, identityContext, inboundToken, context);
 
     return Results.Ok(new
     {
@@ -166,15 +167,21 @@ api.MapPost("/authorize/{resourceName}", async (
 }).RequireAuthorization("ApiScope");
 
 // Port of Services.Authorization's CacheController.Delete — service-to-service cache invalidation,
-// gated to service accounts only. No real cache exists in this sample, so it just echoes what it
-// would have cleared. Deliberately has no .RequireAuthorization() call: ServiceAccountOnlyFilter
-// alone decides both "is there a caller at all" (401) and "is that caller a service account" (403),
-// exactly like the real ServiceAccountAuthorizeFilter it was ported from — see
-// Mini.Infrastructure/Identity/ServiceAccountOnlyFilter.cs.
-api.MapDelete("/admin/cache/{tenantKey}", (string tenantKey) => Results.Ok(new
+// gated to service accounts only. Deliberately has no .RequireAuthorization() call:
+// ServiceAccountOnlyFilter alone decides both "is there a caller at all" (401) and "is that caller a
+// service account" (403), exactly like the real ServiceAccountAuthorizeFilter it was ported from —
+// see Mini.Infrastructure/Identity/ServiceAccountOnlyFilter.cs.
+//
+// Phase 15: forwards to Mini.AuthorizationService's own DELETE /cache/{tenantKey}, which now backs a
+// real, persisted decision cache — this is no longer a simulation. The caller's own bearer token
+// (already proven to be a service account by the filter above) is forwarded as-is: the authorization
+// service re-checks IdentityType == Service itself rather than trusting SampleApi's say-so.
+api.MapDelete("/admin/cache/{tenantKey}", async (string tenantKey, HttpContext ctx, IAuthorizationClient authzClient) =>
 {
-    message = $"Cache cleared for tenant '{tenantKey}' (simulated — this sample has no real cache)."
-})).AddEndpointFilter<ServiceAccountOnlyFilter>();
+    var token = ctx.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    var message = await authzClient.ClearCacheAsync(tenantKey, token);
+    return Results.Ok(new { message });
+}).AddEndpointFilter<ServiceAccountOnlyFilter>();
 
 // Phase 10: an unauthenticated liveness probe, so run-all.ps1 can tell "this process is listening and
 // finished starting" from "this port is open but the app is still warming up." Deliberately the plainest

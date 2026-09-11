@@ -405,5 +405,16 @@ Policies are stored per-tenant, in rows (not code), so a policy can be changed i
 Each policy names a resource, describes who can access it (currently role-based; claim-based is a stub),
 and in what order to check if multiple policies apply.
 
-Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase 14 will wire it into the
-login path so SampleApi actually calls it. See [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
+Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase 14 wired it into
+SampleApi's `/authorize/{resourceName}` endpoint, called per-request rather than at login. See
+[`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
+
+**CachedDecision**:
+Phase 15's persisted authorization-decision cache — a row in `AuthorizationDbContext`, keyed by
+(tenant, caller, resource, a hash of the evaluation context), holding the last decision and an
+expiry. `POST /evaluate` reads it first and only re-runs `Policy.EvaluatePolicy` on a miss or an
+expired row. The distinction that matters: this is *not* an in-memory `Dictionary` — it lives in the
+same SQL Server database as `Policy`, so it survives a restart of Mini.AuthorizationService, unlike
+a naive process-local cache. `DELETE /api/v1/authorization/cache/{tenantKey}` clears it early
+(service accounts only); SampleApi's `DELETE /admin/cache/{tenantKey}` — a no-op simulation through
+Phase 14 — now forwards to that endpoint.

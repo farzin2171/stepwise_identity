@@ -20,7 +20,7 @@ actually is under all its production scaffolding.
 12. Connectors (per-tenant, cascading user sources) ✓
 13. Mini.AuthorizationService (the permission decision leaves the token) ✓
 14. (authorization integration — SampleApi calls the authorization service) ✓
-15. (authorization integration in token issuance?) ← next
+15. (persist authorization decisions across restarts) ✓
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are

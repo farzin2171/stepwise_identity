@@ -201,11 +201,29 @@ The real `Services.Authorization` holds policies in SQL + Redis and serves both 
 `Authorize` endpoint (policy-by-name lookup) and an `Evaluate` endpoint (free-form
 context). This sample holds policies per resource per tenant and has one endpoint.
 
-Backward compatibility: The `/identity` and `/admin/cache` endpoints are unchanged,
-still working exactly as before. The authorization service is opt-in — calling it is a
-deliberate choice per request. Phase 15 might move it into the request pipeline so
-*every* authorization check goes through it; this phase leaves it as a separate
-endpoint you can call when you need an authorization decision that can live outside the token.
+Backward compatibility: The `/identity` endpoint is unchanged, still working exactly as
+before. The authorization service is opt-in — calling it is a deliberate choice per
+request; this phase leaves it as a separate endpoint you can call when you need an
+authorization decision that can live outside the token.
+
+Phase 15 note: `IAuthorizationClient.EvaluateAsync` now takes the caller's own bearer token and
+forwards it to `Mini.AuthorizationService` as-is, rather than calling with no `Authorization`
+header at all (Phase 14's original shape). Mini.AuthorizationService's `/evaluate` requires an
+authenticated caller to know *whose* policies to check — without the token, every real call
+failed with 401, silently turned into `authorized: false` by `AuthorizationClient`'s error
+handling rather than a visible crash. See `src/Mini.AuthorizationService/README.md`'s "Things
+that broke" section.
+
+## Phase 15 — a real `admin/cache` endpoint
+
+Phase 14 left `DELETE /admin/cache/{tenantKey}` as a no-op simulation — "this sample has
+no real cache" — because at the time, nothing in the system cached anything. Phase 15
+gives `Mini.AuthorizationService` a persisted decision cache (`CachedDecisions`), so this
+endpoint now has something to actually clear: it forwards the caller's own bearer token
+(already proven to be a service account by `ServiceAccountOnlyFilter`, same as before) to
+`Mini.AuthorizationService`'s new `DELETE /api/v1/authorization/cache/{tenantKey}`, and
+relays back however many rows it cleared. See `src/Mini.AuthorizationService/README.md`'s
+Phase 15 section for the cache itself.
 
 ## What's deliberately missing (and why)
 
