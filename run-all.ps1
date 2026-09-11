@@ -48,6 +48,10 @@ $services = @(
     # "Member" and test-phase7.ps1 fails. That is not fragility to work around - it is what taking a
     # dependency on a tenant's own system actually costs, and it is worth seeing.
     @{ Name = "Mini.AcmeApi";       Project = "src/Mini.AcmeApi";       Url = "https://localhost:5014" }
+    # Phase 13. Mini.AuthorizationService (:5015) — the authorization decision service. Called by SampleApi
+    # to evaluate policies. Not yet on the login path or a test dependency, but started by default so
+    # test-phase13.ps1 can exercise it.
+    @{ Name = "Mini.AuthorizationService"; Project = "src/Mini.AuthorizationService"; Url = "https://localhost:5015" }
     @{ Name = "MvcClient";          Project = "src/MvcClient";          Url = "https://localhost:5006" }
 )
 

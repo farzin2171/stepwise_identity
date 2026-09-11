@@ -43,6 +43,24 @@ builder.Services.AddAuthorization(options =>
 // comparison to the real DIT.Identity library this was ported from.
 builder.Services.AddScoped<IIdentityContext, IdentityContext>();
 
+// Phase 14. HTTP client to Mini.AuthorizationService (:5015). The service evaluates policies per tenant,
+// answering "is this caller authorized for this resource?" SampleApi calls it for authorization decisions
+// that can change without re-issuing tokens.
+builder.Services.AddScoped<IAuthorizationClient>(services =>
+{
+    var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+    var httpClient = httpClientFactory.CreateClient();
+    httpClient.BaseAddress = new Uri("https://localhost:5015");
+
+    // Local teaching sample only: accept self-signed certificates from localhost:5015
+    var handler = new HttpClientHandler();
+    handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
+        message.RequestUri?.Host == "localhost";
+
+    var logger = services.GetRequiredService<ILogger<AuthorizationClient>>();
+    return new AuthorizationClient(new HttpClient(handler) { BaseAddress = new Uri("https://localhost:5015") }, logger);
+});
+
 // Services.Authorization versions every route (api/v{version:apiVersion}/...) via Asp.Versioning
 // (the MVC package, since it's a Controllers app). This is Asp.Versioning.Http — the minimal-API
 // counterpart — but the route convention and intent are identical.
@@ -111,6 +129,41 @@ api.MapGet("/identity", (HttpContext ctx, IIdentityContext identityContext) => R
     },
     claims = ctx.User.Claims.Select(c => new { c.Type, c.Value })
 })).RequireAuthorization("ApiScope");
+
+// Phase 14. Authorization evaluation endpoint — calls Mini.AuthorizationService to determine if the
+// caller is authorized for a resource. This is the integration point: instead of embedding authorization
+// decisions in the token at issuance time (the `role` claim), the API asks the authorization service
+// at request time. Authorization decisions can now change without re-issuing tokens.
+//
+// The real Services.Authorization has Authorize and Evaluate endpoints that take policy names; this
+// is simplified to just ask about a named resource.
+api.MapPost("/authorize/{resourceName}", async (
+    string resourceName,
+    IIdentityContext identityContext,
+    IAuthorizationClient authzClient,
+    HttpContext ctx) =>
+{
+    // Extract the role from the token if present, for context. Phase 13 left the role claim in the token
+    // on purpose, so the authorization service can compare its own decision against what the token said.
+    var roleFromToken = ctx.User.Claims.FirstOrDefault(c => c.Type == "role")?.Value ?? "Member";
+
+    var context = new Dictionary<string, string>
+    {
+        { "role", roleFromToken },
+        { "caller", identityContext.IdentityType.ToString() }
+    };
+
+    var result = await authzClient.EvaluateAsync(resourceName, identityContext, context);
+
+    return Results.Ok(new
+    {
+        authorized = result.Authorized,
+        reason = result.Reason,
+        callerId = identityContext.ClientId ?? identityContext.Subject,
+        resourceName,
+        roleFromToken
+    });
+}).RequireAuthorization("ApiScope");
 
 // Port of Services.Authorization's CacheController.Delete — service-to-service cache invalidation,
 // gated to service accounts only. No real cache exists in this sample, so it just echoes what it
