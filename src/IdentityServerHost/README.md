@@ -21,6 +21,9 @@ actually is under all its production scaffolding.
 13. Mini.AuthorizationService (the permission decision leaves the token) ✓
 14. (authorization integration — SampleApi calls the authorization service) ✓
 15. (persist authorization decisions across restarts) ✓
+16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
+17. Agent Portal skeleton (a second MVC client, imitating Apply) ← next
+18. (Agent Portal calls Mini.AuthorizationService via the shared client)
 ```
 
 The sibling projects [`../MvcClient`](../MvcClient) and [`../ReactSpa`](../ReactSpa) are

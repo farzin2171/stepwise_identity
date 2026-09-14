@@ -1,6 +1,9 @@
 using System.Text.Json.Serialization;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
+using Mini.Infrastructure.ExternalServices;
+using Mini.Infrastructure.Http;
 using Mini.Infrastructure.Identity;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -46,16 +49,26 @@ builder.Services.AddScoped<IIdentityContext, IdentityContext>();
 // Phase 14. HTTP client to Mini.AuthorizationService (:5015). The service evaluates policies per tenant,
 // answering "is this caller authorized for this resource?" SampleApi calls it for authorization decisions
 // that can change without re-issuing tokens.
-builder.Services.AddScoped<IAuthorizationClient>(services =>
-{
-    // Local teaching sample only: accept self-signed certificates from localhost:5015
-    var handler = new HttpClientHandler();
-    handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
-        message.RequestUri?.Host == "localhost";
+//
+// Phase 16: extracted into Mini.Infrastructure/ExternalServices/AuthorizationClient.cs (see that file's
+// header for the DIT.Authorization.Client comparison) and switched from a one-off HttpClientHandler with
+// a hand-rolled certificate bypass to the same typed-client + Polly convention every other named client in
+// this repo uses (compare IdentityServerHost/Program.cs's AddHttpClient<TenantClient>()). The certificate
+// bypass was never actually needed — every other https://localhost client in this repo relies on `dotnet
+// dev-certs trust` instead, and Mini.AuthorizationService's dev cert is no different; it was dead caution
+// nobody had gotten around to removing. Retry/circuit-breaker were previously entirely absent for this
+// call, unlike every other cross-service HTTP call in the repo — a gap this extraction closes rather than
+// carries forward.
+builder.Services.Configure<ExternalServicesConfiguration>(builder.Configuration.GetSection("ExternalServicesApi"));
 
-    var logger = services.GetRequiredService<ILogger<AuthorizationClient>>();
-    return new AuthorizationClient(new HttpClient(handler) { BaseAddress = new Uri("https://localhost:5015") }, logger);
-});
+builder.Services.AddHttpClient<IAuthorizationClient, AuthorizationClient>((services, client) =>
+       {
+           var externalServices = services.GetRequiredService<IOptions<ExternalServicesConfiguration>>().Value;
+           var serviceDefinition = externalServices.GetServiceDefinition("AuthorizationService");
+           client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
+       })
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 
 // Services.Authorization versions every route (api/v{version:apiVersion}/...) via Asp.Versioning
 // (the MVC package, since it's a Controllers app). This is Asp.Versioning.Http — the minimal-API

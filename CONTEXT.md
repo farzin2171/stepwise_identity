@@ -52,16 +52,27 @@ _Avoid_: "the tenant context" unqualified — always name which project's.
 **Mini.Infrastructure**:
 The single-csproj class library holding the plumbing more than one project in this repo
 consumes: `Identity/` (`IIdentityContext` and friends), `ExternalServices/` (`TokenClient`,
-the service registry), `Http/` (`ResiliencePolicies`). Created in Phase 10 by *extracting*
-existing duplicates, not by designing a library up front.
+the service registry, and — since Phase 16 — `AuthorizationClient`), `Http/`
+(`ResiliencePolicies`). Created in Phase 10 by *extracting* existing duplicates, not by
+designing a library up front.
 
 Distinct from the `MyCompany.*` mini-libraries in the DIT library course at
 `C:\MyWork\MyLearning\EqusoftInfra`: those exist to teach how a DIT library is *built*
-internally; this exists to be the thing three projects here actually consume. When a file
+internally; this exists to be the thing this repo's own apps actually consume. When a file
 here needs to explain a real DIT library's internals, it links to that course.
-_Avoid_: calling it "the mini DIT libraries" or treating it as a port of
-`Libraries.Infrastructure` — it's a de-duplication, and most of `Libraries.Infrastructure`
-has no counterpart here.
+
+**Its relationship to `Libraries.Infrastructure` changed in Phase 16.** Through Phase 15 this
+was pure de-duplication — code that already existed in two or three places, collapsed into
+one — and calling it a port of `Libraries.Infrastructure` was wrong (most of that library had,
+and still has, no counterpart here). Phase 16 added something that did *not* already exist
+twice: `AuthorizationClient`, moved out of `SampleApi` ahead of a second real consumer (the
+Agent Portal, Phase 17-18), loosely modeled on `Libraries.Infrastructure/DIT.Authorization.Client`.
+That makes this a de-duplication library that has *also*, since Phase 16, become the deliberate
+landing spot for a partial, need-driven port — never a whole `DIT.*` project moved over intact,
+and never ahead of a real consumer. See `src/Mini.Infrastructure/README.md`'s Phase 16 section.
+_Avoid_: "the mini DIT libraries" (still wrong — this isn't the from-scratch DIT-library-internals
+course, `EqusoftInfra` is), and don't assume every `DIT.*` area eventually lands here — only the
+ones an app in this repo actually ends up needing.
 
 **Tenant registry**:
 A per-application store of which tenants exist. There are **three**, and they share no

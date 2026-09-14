@@ -29,9 +29,9 @@ Docs that arrive with the phases that need them: `external-role-providers.md` (P
 | [ReactSpa](../../src/ReactSpa) | 5173 | Browser public client. No secret, PKCE only. |
 | [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API, and since Phase 12 the connector machinery that decides where a tenant's users come from. |
 | [Mini.AcmeApi](../../src/Mini.AcmeApi) | 5014 | Acme Corporation's **own** user API. The first process here standing in for a system a *tenant* owns, not one the platform owns — a WebApi connector target. |
-| [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14). Own database: per-tenant `Policies`, and since Phase 15 a persisted `CachedDecisions` table. |
+| [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14) via `Mini.Infrastructure`'s shared, resilient `AuthorizationClient` since Phase 16. Own database: per-tenant `Policies`, and since Phase 15 a persisted `CachedDecisions` table. |
 | [ExternalServicesStub](../../src/ExternalServicesStub) | 5012 | **Superseded** by Mini.UserService in Phase 11. Kept, not started by default. |
-| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10. |
+| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). |
 | [ConfigIngestionTool](../../src/Tools/ConfigIngestionTool) | — | Console tool. Writes config into the database. Run manually. |
 | [StepwiseIdentity.Tests](../../tests/StepwiseIdentity.Tests) | — | The repo's single xunit project. Decision tables only; everything else is a `test-phase*.ps1`. |
 
