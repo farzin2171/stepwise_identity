@@ -90,6 +90,20 @@
       "postLogoutRedirectUris": [ "https://localhost:5006/signout-callback-oidc" ],
       "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
     },
+    // Phase 17. Agent Portal (:5016) — a SECOND MVC client, imitating `Applications.Apply`, with its own
+    // registration rather than reusing "mvcclient"'s. Same shape as mvcclient (confidential,
+    // authorization_code + PKCE) except it doesn't yet request "api1" or "tenant" — it has no downstream
+    // API call and no tenant resolution in this phase (see AgentPortal/README.md's Phase 17 section).
+    {
+      "clientId": "agentportal",
+      "clientSecret": "agentportal-secret",
+      "allowedGrantTypes": [ "authorization_code" ],
+      "requirePkce": true,
+      "requireConsent": false,
+      "redirectUris": [ "https://localhost:5016/signin-oidc" ],
+      "postLogoutRedirectUris": [ "https://localhost:5016/signout-callback-oidc" ],
+      "allowedScopes": [ "openid", "profile" ]
+    },
     {
       "clientId": "reactspa",
       "requireClientSecret": false,

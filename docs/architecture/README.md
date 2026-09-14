@@ -1,6 +1,6 @@
 # Architecture
 
-**Current state of the system**, as of Phase 15. Cross-cutting docs live here — anything
+**Current state of the system**, as of Phase 17. Cross-cutting docs live here — anything
 that names more than one of this repo's projects.
 
 This is deliberately *not* a phase narrative. The per-project READMEs tell the story
@@ -18,6 +18,11 @@ right about the present. Don't "fix" a phase README to match.
 
 Docs that arrive with the phases that need them: `external-role-providers.md` (Phase 14).
 
+`AgentPortal` (:5016) is deliberately absent from the "who calls whom" diagram below — as of
+Phase 17 it only completes an OIDC login against `:5001`, the same box `MvcClient` already
+points at. It gains an outbound arrow of its own in Phase 18, once it has a reason to call
+`Mini.AuthorizationService`.
+
 ## The processes
 
 | Project | Port | What it is |
@@ -25,6 +30,7 @@ Docs that arrive with the phases that need them: `external-role-providers.md` (P
 | [IdentityServerHost](../../src/IdentityServerHost) | 5001 | The authorization server. The mini-IdG proper. |
 | [ExternalIdp](../../src/ExternalIdp) | 5011 | A *second*, independent Duende server. Stands in for a partner's IdP. Knows nothing about tenants. |
 | [MvcClient](../../src/MvcClient) | 5006 | Server-side confidential client. Stands in for `Applications.Apply`. |
+| [AgentPortal](../../src/AgentPortal) | 5016 | Phase 17's second server-side confidential client, its own registration (`agentportal`) on the same IdentityServerHost. Illustrative — not a port of a specific real app — of "more than one MVC/BFF client hits the same IdG," as `Applications.Portal`/`Applications.AdminConsole`/`Applications.CustomerPortal` do alongside `Applications.Apply` in production. A skeleton: login only, no tenant resolution, no downstream call, until Phase 18. |
 | [SampleApi](../../src/SampleApi) | 5007 | JWT-bearer-protected API. Carries `Services.Authorization`'s identity conventions. |
 | [ReactSpa](../../src/ReactSpa) | 5173 | Browser public client. No secret, PKCE only. |
 | [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API, and since Phase 12 the connector machinery that decides where a tenant's users come from. |

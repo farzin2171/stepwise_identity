@@ -53,6 +53,9 @@ $services = @(
     # test-phase13.ps1 can exercise it.
     @{ Name = "Mini.AuthorizationService"; Project = "src/Mini.AuthorizationService"; Url = "https://localhost:5015" }
     @{ Name = "MvcClient";          Project = "src/MvcClient";          Url = "https://localhost:5006" }
+    # Phase 17. A SECOND MVC client, imitating Applications.Apply, with its own client registration
+    # ("agentportal") on the same IdentityServerHost. Not yet on any other project's dependency path.
+    @{ Name = "AgentPortal";        Project = "src/AgentPortal";        Url = "https://localhost:5016" }
 )
 
 if ($IncludeStub) {

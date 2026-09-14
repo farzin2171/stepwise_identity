@@ -420,6 +420,18 @@ Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase
 SampleApi's `/authorize/{resourceName}` endpoint, called per-request rather than at login. See
 [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
 
+**Agent Portal**:
+Phase 17's `src/AgentPortal` — a second server-side MVC client, imitating `Applications.Apply`, with
+its own client registration (`agentportal`) on the same IdentityServerHost `MvcClient` logs into. Its
+own name is illustrative, not a port of anything named "Agent Portal" in the real IdG or `Applications.Apply`
+(confirmed by checking both) — the real precedent for "more than one MVC/BFF client hitting the same
+Identity Gateway" is `Applications.Portal`, `Applications.AdminConsole`, and `Applications.CustomerPortal`
+sitting alongside `Applications.Apply` in production. Phase 17 is a skeleton: login only, no tenant
+resolution, no downstream API call. Phase 18 gives it a reason to exist — calling
+`Mini.AuthorizationService` through `Mini.Infrastructure`'s shared `AuthorizationClient` (see
+`Mini.Infrastructure` above).
+_Avoid_: assuming "Agent Portal" names a real Equisoft product — it doesn't.
+
 **CachedDecision**:
 Phase 15's persisted authorization-decision cache — a row in `AuthorizationDbContext`, keyed by
 (tenant, caller, resource, a hash of the evaluation context), holding the last decision and an

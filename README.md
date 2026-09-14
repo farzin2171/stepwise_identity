@@ -28,14 +28,19 @@ A mini Identity Gateway, built from scratch in phases that mirror
 14. (authorization integration — SampleApi calls the authorization service) ✓
 15. (persist authorization decisions across restarts) ✓
 16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
-17. Agent Portal skeleton (a second MVC client, imitating Apply) ← next
-18. (Agent Portal calls Mini.AuthorizationService via the shared client)
+17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
+18. (Agent Portal calls Mini.AuthorizationService via the shared client) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
   [README](src/IdentityServerHost/README.md) for what each phase adds and why.
 - [src/MvcClient](src/MvcClient) — a server-side (confidential) MVC app that logs in
   against it. See its [README](src/MvcClient/README.md).
+- [src/AgentPortal](src/AgentPortal) — Phase 17's second server-side MVC client, imitating
+  `Applications.Apply`, with its own client registration (`agentportal`) on the same
+  IdentityServerHost `MvcClient` logs into. A skeleton for now — login only, no tenant
+  resolution, no downstream API call — that Phase 18 gives a reason to exist. See its
+  [README](src/AgentPortal/README.md).
 - [src/ReactSpa](src/ReactSpa) — a browser-based (public) SPA that logs in against the
   same server with a different client configuration, because it can't keep a secret.
   See its [README](src/ReactSpa/README.md).
@@ -220,6 +225,11 @@ Verification scripts (repo root):
   hit; a service account can clear a tenant's cache through SampleApi's now-real `admin/cache` endpoint,
   after which the next call misses again; and a non-service-account is still refused with 403
   (regression from Phase 14's gating).
+- [`test-phase17.ps1`](test-phase17.ps1) — proves AgentPortal, a second and independently-configured
+  MVC client, can complete a full login against the same IdentityServerHost using its own client
+  registration (`agentportal`, not `mvcclient`): its public home page needs no session, `/Home/Secure`
+  challenges to IdentityServerHost specifically as `agentportal` (in PAR-shaped form — see its README's
+  "Things that broke"), and a real `alice`/`alice` login reaches Agent Portal's own secure page.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would
