@@ -96,7 +96,7 @@ Write-Host "Phase 14: Authorization integration — SampleApi calls Mini.Authori
 
 Write-Host ""
 Write-Host "§1. SampleApi /authorize endpoint requires authentication" -ForegroundColor Yellow
-$resp = Call "https://localhost:5007/api/v1/authorize/sample-api"
+$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $null "POST"
 if ($resp.StatusCode -ne 401) { throw "Expected 401 for unauthenticated request, got $($resp.StatusCode)" }
 Write-Host "  ✓ unauthenticated request returned 401" -ForegroundColor Green
 
@@ -108,7 +108,7 @@ Write-Host "  ✓ alice (acme) logged in successfully" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "§3. SampleApi /authorize endpoint returns authorization decision from Mini.AuthorizationService" -ForegroundColor Yellow
-$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $token
+$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $token "POST"
 if ($resp.StatusCode -ne 200) { throw "Authorization check failed: $($resp.StatusCode) $($resp.Content)" }
 $authz = $resp.Content | ConvertFrom-Json
 if ($authz.authorized -ne $true) { throw "Expected authorization to be granted for alice, got $($authz | ConvertTo-Json)" }
@@ -118,7 +118,7 @@ Write-Host "    Token role: $($authz.roleFromToken), AuthZ service decision: $($
 Write-Host ""
 Write-Host "§4. Globex user gets different authorization decision (per-tenant policies)" -ForegroundColor Yellow
 $tokenGlobex = LoginAndGetToken "bob" "bob" "globex"
-$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $tokenGlobex
+$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $tokenGlobex "POST"
 if ($resp.StatusCode -ne 200) { throw "Authorization check failed: $($resp.StatusCode) $($resp.Content)" }
 $authz = $resp.Content | ConvertFrom-Json
 if ($authz.authorized -ne $true) { throw "Expected authorization for bob (globex member), got $($authz | ConvertTo-Json)" }
@@ -138,8 +138,8 @@ $client = NewClient
 $request = [System.Net.Http.HttpRequestMessage]::new("POST", "https://localhost:5001/connect/token")
 $body = @{
     grant_type = "client_credentials"
-    client_id = "userservice-svc.acme"
-    client_secret = "acme-userservice-secret"
+    client_id = "mvcclient-svc.acme"
+    client_secret = "acme-svc-secret"
     scope = "api1"
 }
 $pairs = [System.Collections.Generic.List[System.Collections.Generic.KeyValuePair[string, string]]]::new()
@@ -149,7 +149,7 @@ $response = $client.SendAsync($request).GetAwaiter().GetResult()
 if ($response.StatusCode -ne 200) { throw "Failed to get service account token" }
 $svcToken = ($response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json).access_token
 
-$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $svcToken
+$resp = Call "https://localhost:5007/api/v1/authorize/sample-api" $svcToken "POST"
 if ($resp.StatusCode -ne 200) { throw "Authorization check failed for service account: $($resp.StatusCode)" }
 $authz = $resp.Content | ConvertFrom-Json
 Write-Host "  ✓ service account can call /authorize, authorized=$($authz.authorized)" -ForegroundColor Green

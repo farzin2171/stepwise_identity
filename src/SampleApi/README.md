@@ -201,11 +201,71 @@ The real `Services.Authorization` holds policies in SQL + Redis and serves both 
 `Authorize` endpoint (policy-by-name lookup) and an `Evaluate` endpoint (free-form
 context). This sample holds policies per resource per tenant and has one endpoint.
 
-Backward compatibility: The `/identity` and `/admin/cache` endpoints are unchanged,
-still working exactly as before. The authorization service is opt-in — calling it is a
-deliberate choice per request. Phase 15 might move it into the request pipeline so
-*every* authorization check goes through it; this phase leaves it as a separate
-endpoint you can call when you need an authorization decision that can live outside the token.
+Backward compatibility: The `/identity` endpoint is unchanged, still working exactly as
+before. The authorization service is opt-in — calling it is a deliberate choice per
+request; this phase leaves it as a separate endpoint you can call when you need an
+authorization decision that can live outside the token.
+
+Phase 15 note: `IAuthorizationClient.EvaluateAsync` now takes the caller's own bearer token and
+forwards it to `Mini.AuthorizationService` as-is, rather than calling with no `Authorization`
+header at all (Phase 14's original shape). Mini.AuthorizationService's `/evaluate` requires an
+authenticated caller to know *whose* policies to check — without the token, every real call
+failed with 401, silently turned into `authorized: false` by `AuthorizationClient`'s error
+handling rather than a visible crash. See `src/Mini.AuthorizationService/README.md`'s "Things
+that broke" section.
+
+## Phase 15 — a real `admin/cache` endpoint
+
+Phase 14 left `DELETE /admin/cache/{tenantKey}` as a no-op simulation — "this sample has
+no real cache" — because at the time, nothing in the system cached anything. Phase 15
+gives `Mini.AuthorizationService` a persisted decision cache (`CachedDecisions`), so this
+endpoint now has something to actually clear: it forwards the caller's own bearer token
+(already proven to be a service account by `ServiceAccountOnlyFilter`, same as before) to
+`Mini.AuthorizationService`'s new `DELETE /api/v1/authorization/cache/{tenantKey}`, and
+relays back however many rows it cleared. See `src/Mini.AuthorizationService/README.md`'s
+Phase 15 section for the cache itself.
+
+## Phase 16 — the authorization client moves to `Mini.Infrastructure`
+
+`AuthorizationClient.cs` (`IAuthorizationClient`, `AuthorizationResult`, `AuthorizationClient`)
+no longer lives here. It moved to
+[`Mini.Infrastructure/ExternalServices/AuthorizationClient.cs`](../Mini.Infrastructure/README.md#phase-16--a-deliberate-port-begins)
+ahead of a second, real consumer arriving (the Agent Portal, Phases 17-18) — the same
+"shared plumbing goes in `Mini.Infrastructure`" rule Phase 10 established, applied to code that
+had only ever existed once rather than to a duplicate.
+
+Two things changed along with the move, neither of them a new feature — both closing a gap
+this project's client had that every *other* named `HttpClient` in this repo already didn't:
+
+1. **Resilience.** The old registration built its own `HttpClient` from a raw
+   `HttpClientHandler`, with no `AddHttpClient` and no retry/circuit-breaker policy at all.
+   It's now `AddHttpClient<IAuthorizationClient, AuthorizationClient>()` with
+   `ResiliencePolicies.Retry()`/`CircuitBreaker()`, the same convention `IdentityServerHost`,
+   `MvcClient`, and `Mini.UserService` already used for every one of *their* outbound calls.
+   A downed `Mini.AuthorizationService` used to fail on the very first connection attempt;
+   now it's retried (2s, then 4s) before giving up, and three failures in a row open a
+   30-second circuit exactly like `ExternalServicesStub`'s did back in Phase 9.
+2. **Config-driven base address.** `https://localhost:5015` was a literal in this project's
+   `Program.cs`. It's now `ExternalServicesConfiguration`'s
+   `ServiceDefinitions["AuthorizationService"]` (see `appsettings.json`), the same
+   `GetServiceDefinition(...).GetFullPath()` pattern `MvcClient` already uses for its
+   `"SampleApi"` client.
+
+The certificate-bypass `HttpClientHandler` the old code built is gone, not replaced — every
+other `https://localhost` client in this repo relies on a trusted local dev certificate
+(`dotnet dev-certs trust`) instead, and this one is no different.
+
+**Things that broke, proven by actually running it:** `test-phase16.ps1` stops
+`Mini.AuthorizationService`, calls `/authorize/sample-api`, and the call now takes noticeably
+longer to fail (retry backoff engaging) instead of failing instantly. Restarting the service
+right after doesn't immediately fix the next call — the `CircuitBreaker()` trips open for 30
+seconds after 3 consecutive failures, so a request made inside that window still gets
+`authorized: false` even though the dependency is back. The script waits the window out before
+confirming recovery, rather than pretending the breaker doesn't apply here too.
+
+Everything else about this endpoint's behavior is unchanged — `test-phase13.ps1`,
+`test-phase14.ps1`, and `test-phase15.ps1` all still pass, unmodified, against the same
+`/authorize` and `/evaluate` call path.
 
 ## What's deliberately missing (and why)
 

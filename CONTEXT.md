@@ -52,16 +52,27 @@ _Avoid_: "the tenant context" unqualified — always name which project's.
 **Mini.Infrastructure**:
 The single-csproj class library holding the plumbing more than one project in this repo
 consumes: `Identity/` (`IIdentityContext` and friends), `ExternalServices/` (`TokenClient`,
-the service registry), `Http/` (`ResiliencePolicies`). Created in Phase 10 by *extracting*
-existing duplicates, not by designing a library up front.
+the service registry, and — since Phase 16 — `AuthorizationClient`), `Http/`
+(`ResiliencePolicies`). Created in Phase 10 by *extracting* existing duplicates, not by
+designing a library up front.
 
 Distinct from the `MyCompany.*` mini-libraries in the DIT library course at
 `C:\MyWork\MyLearning\EqusoftInfra`: those exist to teach how a DIT library is *built*
-internally; this exists to be the thing three projects here actually consume. When a file
+internally; this exists to be the thing this repo's own apps actually consume. When a file
 here needs to explain a real DIT library's internals, it links to that course.
-_Avoid_: calling it "the mini DIT libraries" or treating it as a port of
-`Libraries.Infrastructure` — it's a de-duplication, and most of `Libraries.Infrastructure`
-has no counterpart here.
+
+**Its relationship to `Libraries.Infrastructure` changed in Phase 16.** Through Phase 15 this
+was pure de-duplication — code that already existed in two or three places, collapsed into
+one — and calling it a port of `Libraries.Infrastructure` was wrong (most of that library had,
+and still has, no counterpart here). Phase 16 added something that did *not* already exist
+twice: `AuthorizationClient`, moved out of `SampleApi` ahead of a second real consumer (the
+Agent Portal, Phase 17-18), loosely modeled on `Libraries.Infrastructure/DIT.Authorization.Client`.
+That makes this a de-duplication library that has *also*, since Phase 16, become the deliberate
+landing spot for a partial, need-driven port — never a whole `DIT.*` project moved over intact,
+and never ahead of a real consumer. See `src/Mini.Infrastructure/README.md`'s Phase 16 section.
+_Avoid_: "the mini DIT libraries" (still wrong — this isn't the from-scratch DIT-library-internals
+course, `EqusoftInfra` is), and don't assume every `DIT.*` area eventually lands here — only the
+ones an app in this repo actually ends up needing.
 
 **Tenant registry**:
 A per-application store of which tenants exist. There are **three**, and they share no
@@ -405,5 +416,28 @@ Policies are stored per-tenant, in rows (not code), so a policy can be changed i
 Each policy names a resource, describes who can access it (currently role-based; claim-based is a stub),
 and in what order to check if multiple policies apply.
 
-Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase 14 will wire it into the
-login path so SampleApi actually calls it. See [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
+Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase 14 wired it into
+SampleApi's `/authorize/{resourceName}` endpoint, called per-request rather than at login. See
+[`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
+
+**Agent Portal**:
+Phase 17's `src/AgentPortal` — a second server-side MVC client, imitating `Applications.Apply`, with
+its own client registration (`agentportal`) on the same IdentityServerHost `MvcClient` logs into. Its
+own name is illustrative, not a port of anything named "Agent Portal" in the real IdG or `Applications.Apply`
+(confirmed by checking both) — the real precedent for "more than one MVC/BFF client hitting the same
+Identity Gateway" is `Applications.Portal`, `Applications.AdminConsole`, and `Applications.CustomerPortal`
+sitting alongside `Applications.Apply` in production. Phase 17 is a skeleton: login only, no tenant
+resolution, no downstream API call. Phase 18 gives it a reason to exist — calling
+`Mini.AuthorizationService` through `Mini.Infrastructure`'s shared `AuthorizationClient` (see
+`Mini.Infrastructure` above).
+_Avoid_: assuming "Agent Portal" names a real Equisoft product — it doesn't.
+
+**CachedDecision**:
+Phase 15's persisted authorization-decision cache — a row in `AuthorizationDbContext`, keyed by
+(tenant, caller, resource, a hash of the evaluation context), holding the last decision and an
+expiry. `POST /evaluate` reads it first and only re-runs `Policy.EvaluatePolicy` on a miss or an
+expired row. The distinction that matters: this is *not* an in-memory `Dictionary` — it lives in the
+same SQL Server database as `Policy`, so it survives a restart of Mini.AuthorizationService, unlike
+a naive process-local cache. `DELETE /api/v1/authorization/cache/{tenantKey}` clears it early
+(service accounts only); SampleApi's `DELETE /admin/cache/{tenantKey}` — a no-op simulation through
+Phase 14 — now forwards to that endpoint.

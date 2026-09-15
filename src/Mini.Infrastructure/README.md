@@ -1,26 +1,36 @@
 # Mini.Infrastructure
 
-The shared plumbing three projects in this repo actually consume. Introduced in Phase 10 by
+The shared plumbing more than one project in this repo consumes. Introduced in Phase 10 by
 **extracting code that already existed in more than one place**, not by designing a library
-up front.
+up front — and, as of Phase 16, also the destination for a deliberate, partial port of
+`C:\work\Libraries.Infrastructure` (the real DIT.* libraries), one piece at a time, as this
+sample's own apps come to need them. See "Phase 16 — a deliberate port begins" below for why
+that's a reversal of what this section used to say, not a quiet scope-creep.
 
 One csproj, organised by folder. It gets split only when a phase genuinely forces it — and
 if that happens, that's a "things that broke" entry, not a silent refactor.
 
 ```
 Identity/          who is calling — claims-only, no browser assumed
-ExternalServices/  calling another service — tokens, service registry
+ExternalServices/  calling another service — tokens, service registry, the authorization client
 Http/              resilience policies for outbound calls
 ```
 
 ## What this is *not*
 
-This is not a from-scratch rebuild of the DIT infrastructure libraries. That course already
-exists and is finished, at `C:\MyWork\MyLearning\EqusoftInfra` — nine series that teach
-`DIT.Identity`, `DIT.HTTP`, `DIT.Connectors`, `DIT.Auth`, `DIT.Persistence`, `DIT.WebApi`
-and more by having you rebuild each one as `MyCompany.*`.
+This is not a from-scratch rebuild of the DIT infrastructure libraries — that's what
+`C:\MyWork\MyLearning\EqusoftInfra` is for, teaching `DIT.Identity`, `DIT.HTTP`,
+`DIT.Connectors`, `DIT.Auth`, `DIT.Persistence`, `DIT.WebApi` and more by having you rebuild
+each one as `MyCompany.*`, series by series, in isolation from any consuming app.
 
-The two have different jobs, and keeping them apart is deliberate:
+What changed in Phase 16 is narrower than "now it's a `Libraries.Infrastructure` port": this
+folder ports the *specific pieces* this repo's own apps need, in the order they need them —
+never a whole `DIT.*` project moved over intact, and never ahead of a real consumer. Most of
+`Libraries.Infrastructure` (DIT.Persistence.*, DIT.Connectors.* beyond what Phase 12 already
+ported into `Mini.UserService`, DIT.MessageQueue, DIT.Metrics.*, DIT.FeatureFlags, and more)
+still has no counterpart here, and won't unless a later phase's app genuinely needs one.
+
+The two courses still have different jobs, and keeping them apart is still deliberate:
 
 | | This repo | EqusoftInfra |
 | --- | --- | --- |
@@ -129,3 +139,44 @@ determined the shape.
 `Identity/` gained its predicted second consumer too: `Mini.UserService` registers `IIdentityContext`,
 `IdentityContextMiddleware` and `ServiceAccountOnlyFilter`. That consumer immediately found the limit
 of `IdentityContext`'s two-value `IdentityType` — see the same architecture doc's closing section.
+
+## Phase 16 — a deliberate port begins
+
+Through Phase 15, this file said, in `CONTEXT.md`'s words: "don't treat this as a port of
+`Libraries.Infrastructure` — it's a de-duplication, and most of `Libraries.Infrastructure` has
+no counterpart here." That was accurate through Phase 15 and is being revised now, not
+retroactively rewritten: everything extracted through Phase 15 really was de-dup (two or three
+copies of the same code, collapsed). Phase 16 is the first time something is ported that
+*didn't already exist twice* — it existed once, in `SampleApi`, and gets pulled out because a
+second, real consumer (Phase 17's Agent Portal) is coming, not because it was duplicated.
+
+**What moved: `ExternalServices/AuthorizationClient.cs`** (`IAuthorizationClient`,
+`AuthorizationResult`, `AuthorizationClient`) — out of `SampleApi`, which had it as a private,
+hand-rolled HTTP client. Loosely modeled on `Libraries.Infrastructure/DIT.Authorization.Client`,
+though that library is shaped quite differently (a Refit interface wired into ASP.NET Core's
+`IAuthorizationPolicyProvider`, so a real caller writes `[Authorize(Policy = "...")]` rather than
+an explicit `EvaluateAsync` call) — see the file's own header comment for the full comparison.
+Porting the policy-provider integration itself is future work, not this phase's.
+
+**What came with it, not from the real library but from this repo's own existing convention:**
+the extraction was also the fix for a standing inconsistency. `SampleApi`'s client built its own
+`HttpClientHandler` with a hardcoded certificate bypass and no resilience policy at all — the one
+outbound call in this entire repo that had neither. Every other named client
+(`IdentityServerHost`'s `TenantClient`/`UserClient`, `MvcClient`'s `"SampleApi"`/`"token"`,
+`Mini.UserService`'s `"IdentityGateway"`/`"token"`/`"connectors"`) uses
+`AddHttpClient<T>().AddPolicyHandler(ResiliencePolicies.Retry()).AddPolicyHandler(ResiliencePolicies.CircuitBreaker())`.
+`SampleApi`'s new registration now matches that (see its `Program.cs`), and its base address comes
+from `ExternalServicesConfiguration`'s `ServiceDefinitions["AuthorizationService"]` instead of a
+literal `https://localhost:5015` — the same config-driven pattern `MvcClient` already uses for
+`"SampleApi"`.
+
+The certificate bypass wasn't replaced with anything — it was dead caution. Every other
+`https://localhost` client in this repo relies on `dotnet dev-certs trust` instead, and
+Mini.AuthorizationService's dev certificate is no different.
+
+**Proven live, not just by inspection:** `test-phase16.ps1` stops `Mini.AuthorizationService`,
+confirms the call now takes visibly longer (Retry()'s 2s + 4s backoff, where before Phase 16 a
+connection refusal failed instantly with no retry at all), restarts it, and confirms recovery —
+hitting the exact CircuitBreaker() 30-second-open-window gotcha Phase 9's README already named
+for `ExternalServicesStub`. See that script and `SampleApi/README.md`'s Phase 16 section for the
+full "things that broke" account.

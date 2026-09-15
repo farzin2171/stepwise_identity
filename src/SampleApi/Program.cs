@@ -1,6 +1,9 @@
 using System.Text.Json.Serialization;
 using Asp.Versioning;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.Options;
+using Mini.Infrastructure.ExternalServices;
+using Mini.Infrastructure.Http;
 using Mini.Infrastructure.Identity;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -46,20 +49,26 @@ builder.Services.AddScoped<IIdentityContext, IdentityContext>();
 // Phase 14. HTTP client to Mini.AuthorizationService (:5015). The service evaluates policies per tenant,
 // answering "is this caller authorized for this resource?" SampleApi calls it for authorization decisions
 // that can change without re-issuing tokens.
-builder.Services.AddScoped<IAuthorizationClient>(services =>
-{
-    var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
-    var httpClient = httpClientFactory.CreateClient();
-    httpClient.BaseAddress = new Uri("https://localhost:5015");
+//
+// Phase 16: extracted into Mini.Infrastructure/ExternalServices/AuthorizationClient.cs (see that file's
+// header for the DIT.Authorization.Client comparison) and switched from a one-off HttpClientHandler with
+// a hand-rolled certificate bypass to the same typed-client + Polly convention every other named client in
+// this repo uses (compare IdentityServerHost/Program.cs's AddHttpClient<TenantClient>()). The certificate
+// bypass was never actually needed — every other https://localhost client in this repo relies on `dotnet
+// dev-certs trust` instead, and Mini.AuthorizationService's dev cert is no different; it was dead caution
+// nobody had gotten around to removing. Retry/circuit-breaker were previously entirely absent for this
+// call, unlike every other cross-service HTTP call in the repo — a gap this extraction closes rather than
+// carries forward.
+builder.Services.Configure<ExternalServicesConfiguration>(builder.Configuration.GetSection("ExternalServicesApi"));
 
-    // Local teaching sample only: accept self-signed certificates from localhost:5015
-    var handler = new HttpClientHandler();
-    handler.ServerCertificateCustomValidationCallback = (message, cert, chain, errors) =>
-        message.RequestUri?.Host == "localhost";
-
-    var logger = services.GetRequiredService<ILogger<AuthorizationClient>>();
-    return new AuthorizationClient(new HttpClient(handler) { BaseAddress = new Uri("https://localhost:5015") }, logger);
-});
+builder.Services.AddHttpClient<IAuthorizationClient, AuthorizationClient>((services, client) =>
+       {
+           var externalServices = services.GetRequiredService<IOptions<ExternalServicesConfiguration>>().Value;
+           var serviceDefinition = externalServices.GetServiceDefinition("AuthorizationService");
+           client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
+       })
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
 
 // Services.Authorization versions every route (api/v{version:apiVersion}/...) via Asp.Versioning
 // (the MVC package, since it's a Controllers app). This is Asp.Versioning.Http — the minimal-API
@@ -153,7 +162,12 @@ api.MapPost("/authorize/{resourceName}", async (
         { "caller", identityContext.IdentityType.ToString() }
     };
 
-    var result = await authzClient.EvaluateAsync(resourceName, identityContext, context);
+    // Forward this request's own bearer token as-is — Mini.AuthorizationService needs the real
+    // caller's identity (subject, tenant) to evaluate per-tenant policies, which a generic
+    // service-to-service credential wouldn't carry. That's why Mini.AuthorizationService accepts
+    // this token's "api1" audience alongside "authapi" (see its Program.cs).
+    var inboundToken = ctx.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    var result = await authzClient.EvaluateAsync(resourceName, identityContext, inboundToken, context);
 
     return Results.Ok(new
     {
@@ -166,15 +180,21 @@ api.MapPost("/authorize/{resourceName}", async (
 }).RequireAuthorization("ApiScope");
 
 // Port of Services.Authorization's CacheController.Delete — service-to-service cache invalidation,
-// gated to service accounts only. No real cache exists in this sample, so it just echoes what it
-// would have cleared. Deliberately has no .RequireAuthorization() call: ServiceAccountOnlyFilter
-// alone decides both "is there a caller at all" (401) and "is that caller a service account" (403),
-// exactly like the real ServiceAccountAuthorizeFilter it was ported from — see
-// Mini.Infrastructure/Identity/ServiceAccountOnlyFilter.cs.
-api.MapDelete("/admin/cache/{tenantKey}", (string tenantKey) => Results.Ok(new
+// gated to service accounts only. Deliberately has no .RequireAuthorization() call:
+// ServiceAccountOnlyFilter alone decides both "is there a caller at all" (401) and "is that caller a
+// service account" (403), exactly like the real ServiceAccountAuthorizeFilter it was ported from —
+// see Mini.Infrastructure/Identity/ServiceAccountOnlyFilter.cs.
+//
+// Phase 15: forwards to Mini.AuthorizationService's own DELETE /cache/{tenantKey}, which now backs a
+// real, persisted decision cache — this is no longer a simulation. The caller's own bearer token
+// (already proven to be a service account by the filter above) is forwarded as-is: the authorization
+// service re-checks IdentityType == Service itself rather than trusting SampleApi's say-so.
+api.MapDelete("/admin/cache/{tenantKey}", async (string tenantKey, HttpContext ctx, IAuthorizationClient authzClient) =>
 {
-    message = $"Cache cleared for tenant '{tenantKey}' (simulated — this sample has no real cache)."
-})).AddEndpointFilter<ServiceAccountOnlyFilter>();
+    var token = ctx.Request.Headers.Authorization.ToString().Replace("Bearer ", "");
+    var message = await authzClient.ClearCacheAsync(tenantKey, token);
+    return Results.Ok(new { message });
+}).AddEndpointFilter<ServiceAccountOnlyFilter>();
 
 // Phase 10: an unauthenticated liveness probe, so run-all.ps1 can tell "this process is listening and
 // finished starting" from "this port is open but the app is still warming up." Deliberately the plainest

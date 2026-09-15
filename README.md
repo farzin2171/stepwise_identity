@@ -26,13 +26,21 @@ A mini Identity Gateway, built from scratch in phases that mirror
 12. Connectors (per-tenant, cascading user sources) ✓
 13. Mini.AuthorizationService (the permission decision leaves the token) ✓
 14. (authorization integration — SampleApi calls the authorization service) ✓
-15. (persist authorization decisions across restarts) ← next
+15. (persist authorization decisions across restarts) ✓
+16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
+17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
+18. (Agent Portal calls Mini.AuthorizationService via the shared client) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
   [README](src/IdentityServerHost/README.md) for what each phase adds and why.
 - [src/MvcClient](src/MvcClient) — a server-side (confidential) MVC app that logs in
   against it. See its [README](src/MvcClient/README.md).
+- [src/AgentPortal](src/AgentPortal) — Phase 17's second server-side MVC client, imitating
+  `Applications.Apply`, with its own client registration (`agentportal`) on the same
+  IdentityServerHost `MvcClient` logs into. A skeleton for now — login only, no tenant
+  resolution, no downstream API call — that Phase 18 gives a reason to exist. See its
+  [README](src/AgentPortal/README.md).
 - [src/ReactSpa](src/ReactSpa) — a browser-based (public) SPA that logs in against the
   same server with a different client configuration, because it can't keep a secret.
   See its [README](src/ReactSpa/README.md).
@@ -211,12 +219,23 @@ Verification scripts (repo root):
   users can log in (regression test), the authorization service is called and returns per-tenant decisions,
   the `/identity` endpoint still works (regression), and service accounts can call the authorize endpoint.
   Authorization decisions now come from the service, not just the token.
+- [`test-phase15.ps1`](test-phase15.ps1) — proves Mini.AuthorizationService's decision cache actually
+  caches, in seven parts: a repeat `/evaluate` call for the same caller/resource/context is served from
+  the cache instead of re-evaluating policies; a different context is its own cache miss, not a false
+  hit; a service account can clear a tenant's cache through SampleApi's now-real `admin/cache` endpoint,
+  after which the next call misses again; and a non-service-account is still refused with 403
+  (regression from Phase 14's gating).
+- [`test-phase17.ps1`](test-phase17.ps1) — proves AgentPortal, a second and independently-configured
+  MVC client, can complete a full login against the same IdentityServerHost using its own client
+  registration (`agentportal`, not `mvcclient`): its public home page needs no session, `/Home/Secure`
+  challenges to IdentityServerHost specifically as `agentportal` (in PAR-shaped form — see its README's
+  "Things that broke"), and a real `alice`/`alice` login reaches Agent Portal's own secure page.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would
 document badly: identity conversion, the identity-type rules every service now depends on,
-and — since Phase 12 — which connector serves a given tenant and what a cascading chain's
-outcome is. The connector-resolution tests run against the **shipped** seed rows, so they pin
+Phase 12's connector chain outcomes, and — since Phase 15 — a cached decision's expiry rule.
+The connector-resolution tests run against the **shipped** seed rows, so they pin
 the decision table itself rather than only the code that reads it.
 
 None of the scripts drive real browser JavaScript — see
