@@ -1,7 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.DependencyInjection;
 
-namespace MvcClient.Infrastructure.MultiTenant;
+namespace Mini.Infrastructure.MultiTenant;
 
 // Apply counterpart: Infrastructure/MultiTenant/TenantIdentificationFilter.cs — but a narrower check than
 // the real one, and worth being explicit about the gap. The real filter compares TWO independently
@@ -12,8 +13,11 @@ namespace MvcClient.Infrastructure.MultiTenant;
 // against; a "mismatch" in the real sense simply can't happen here. What this filter still meaningfully
 // checks: that an authenticated user's tenant actually resolved to something in Tenants.All at all. It
 // would fail closed (instead of silently proceeding with Tenant = null) if IdentityServerHost's
-// "tenant_id" claim value were ever something this app's own tenant registry doesn't recognize — exactly
-// the "kept in sync by an ops process, not shared code" divergence Tenants.cs's own comment describes.
+// "tenant_id" claim value were ever something a consuming app's own tenant registry doesn't recognize —
+// exactly the "kept in sync by an ops process, not shared code" divergence Tenants.cs's own comment
+// describes.
+//
+// Extracted into Mini.Infrastructure in Phase 18 alongside the rest of this folder — see Tenant.cs.
 public class RequireTenantAttribute : ActionFilterAttribute
 {
     public override void OnActionExecuting(ActionExecutingContext context)

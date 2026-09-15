@@ -29,7 +29,7 @@ A mini Identity Gateway, built from scratch in phases that mirror
 15. (persist authorization decisions across restarts) ✓
 16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
 17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
-18. (Agent Portal calls Mini.AuthorizationService via the shared client) ← next
+18. Agent Portal calls Mini.AuthorizationService via the shared client ✓
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -38,8 +38,10 @@ A mini Identity Gateway, built from scratch in phases that mirror
   against it. See its [README](src/MvcClient/README.md).
 - [src/AgentPortal](src/AgentPortal) — Phase 17's second server-side MVC client, imitating
   `Applications.Apply`, with its own client registration (`agentportal`) on the same
-  IdentityServerHost `MvcClient` logs into. A skeleton for now — login only, no tenant
-  resolution, no downstream API call — that Phase 18 gives a reason to exist. See its
+  IdentityServerHost `MvcClient` logs into. Phase 17 was a skeleton — login only. Phase 18
+  gives it a reason to exist: tenant resolution (via `Mini.Infrastructure`'s newly-shared
+  `ITenantContext`) and a real downstream call to `Mini.AuthorizationService` through the
+  same `AuthorizationClient` SampleApi already uses. See its
   [README](src/AgentPortal/README.md).
 - [src/ReactSpa](src/ReactSpa) — a browser-based (public) SPA that logs in against the
   same server with a different client configuration, because it can't keep a secret.
@@ -230,6 +232,12 @@ Verification scripts (repo root):
   registration (`agentportal`, not `mvcclient`): its public home page needs no session, `/Home/Secure`
   challenges to IdentityServerHost specifically as `agentportal` (in PAR-shaped form — see its README's
   "Things that broke"), and a real `alice`/`alice` login reaches Agent Portal's own secure page.
+- [`test-phase18.ps1`](test-phase18.ps1) — proves Agent Portal calls Mini.AuthorizationService through
+  Mini.Infrastructure's shared `AuthorizationClient`, in four parts: AgentPortal's own login still works
+  (regression, now requesting `api1`/`tenant` too), a signed-in Acme user gets a real `authorized: true`
+  decision for the new `"agent-portal"` resource, a signed-in Globex user gets its own per-tenant
+  decision from the same resource, and an anonymous request never reaches the authorization result at
+  all (challenged to IdentityServerHost's login page instead).
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

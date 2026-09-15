@@ -92,8 +92,12 @@
     },
     // Phase 17. Agent Portal (:5016) — a SECOND MVC client, imitating `Applications.Apply`, with its own
     // registration rather than reusing "mvcclient"'s. Same shape as mvcclient (confidential,
-    // authorization_code + PKCE) except it doesn't yet request "api1" or "tenant" — it has no downstream
-    // API call and no tenant resolution in this phase (see AgentPortal/README.md's Phase 17 section).
+    // authorization_code + PKCE).
+    //
+    // Phase 18 added "api1" and "tenant" to allowedScopes, mirroring mvcclient's entry exactly — Agent
+    // Portal now resolves a tenant (via Mini.Infrastructure's extracted ITenantContext) and calls
+    // Mini.AuthorizationService with its own signed-in user's access token, both of which require the
+    // same two scopes mvcclient already requests. See AgentPortal/README.md's Phase 18 section.
     {
       "clientId": "agentportal",
       "clientSecret": "agentportal-secret",
@@ -102,7 +106,7 @@
       "requireConsent": false,
       "redirectUris": [ "https://localhost:5016/signin-oidc" ],
       "postLogoutRedirectUris": [ "https://localhost:5016/signout-callback-oidc" ],
-      "allowedScopes": [ "openid", "profile" ]
+      "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
     },
     {
       "clientId": "reactspa",

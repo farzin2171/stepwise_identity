@@ -35,10 +35,20 @@ The scoped, per-request object `TenantResolutionMiddleware` populates from
 to reject a login whose credentials don't match the requested tenant.
 _Avoid_: "tenant" alone — see `ITenantContext` below for the other, unrelated resolution.
 
-**ITenantContext** (MvcClient):
-MvcClient's own tenant abstraction, ported from `Applications.Apply` — resolves from the
-`tenant_id` *claim* on the already-signed-in user, not a query parameter. A different
-mechanism for a related concept; the two `TenantContext`s don't share code or a type.
+**ITenantContext**:
+A tenant abstraction ported from `Applications.Apply` — resolves from the `tenant_id`
+*claim* on the already-signed-in user, not a query parameter. A different mechanism for a
+related concept than IdentityServerHost's `TenantContext`; the two `TenantContext`s don't
+share code or a type (see that entry below).
+
+Lived only in `MvcClient/Infrastructure/MultiTenant` through Phase 17. Moved to
+`Mini.Infrastructure/MultiTenant` in Phase 18, when `AgentPortal` became a second, genuine
+consumer of the identical claims-based resolution — a pure extraction (same types, same
+behavior, only the namespace changed), not a design change. Both `MvcClient` and
+`AgentPortal` now share the SAME `Tenants.All` dictionary rather than each keeping its own
+copy — see `Mini.Infrastructure/README.md`'s Phase 18 section for why this one, unlike the
+three *tenant registries* below, was a shared concept all along rather than two things
+wearing the same name.
 
 **Confirmed in Phase 10**, which set out to merge them and concluded it shouldn't. They are
 not one abstraction with two resolvers: IdentityServerHost's resolves *before*
@@ -53,8 +63,10 @@ _Avoid_: "the tenant context" unqualified — always name which project's.
 The single-csproj class library holding the plumbing more than one project in this repo
 consumes: `Identity/` (`IIdentityContext` and friends), `ExternalServices/` (`TokenClient`,
 the service registry, and — since Phase 16 — `AuthorizationClient`), `Http/`
-(`ResiliencePolicies`). Created in Phase 10 by *extracting* existing duplicates, not by
-designing a library up front.
+(`ResiliencePolicies`), and — since Phase 18 — `MultiTenant/` (`ITenantContext` and
+friends, extracted out of MvcClient once AgentPortal became a second real consumer).
+Created in Phase 10 by *extracting* existing duplicates, not by designing a library up
+front.
 
 Distinct from the `MyCompany.*` mini-libraries in the DIT library course at
 `C:\MyWork\MyLearning\EqusoftInfra`: those exist to teach how a DIT library is *built*
@@ -77,7 +89,8 @@ ones an app in this repo actually ends up needing.
 **Tenant registry**:
 A per-application store of which tenants exist. There are **three**, and they share no
 code, table, or type: `IdentityServerHost/Tenants.cs` (key → display name),
-`MvcClient/Infrastructure/MultiTenant/Tenants.cs` (key → `Tenant`), and — as of Phase 11 —
+`Mini.Infrastructure/MultiTenant/Tenants.cs` (key → `Tenant`; `MvcClient`'s own copy through Phase 17,
+moved in Phase 18 and now also read by `AgentPortal` — see `ITenantContext` above), and — as of Phase 11 —
 `Mini.UserService`'s `Tenants` **table** (key → GUID, name, `IsActive`). They agree only by
 convention, mirroring the real system, where Apply's `Tenants` table and the IdG's registry
 are independent stores reconciled by an ops process.
@@ -426,10 +439,14 @@ its own client registration (`agentportal`) on the same IdentityServerHost `MvcC
 own name is illustrative, not a port of anything named "Agent Portal" in the real IdG or `Applications.Apply`
 (confirmed by checking both) — the real precedent for "more than one MVC/BFF client hitting the same
 Identity Gateway" is `Applications.Portal`, `Applications.AdminConsole`, and `Applications.CustomerPortal`
-sitting alongside `Applications.Apply` in production. Phase 17 is a skeleton: login only, no tenant
-resolution, no downstream API call. Phase 18 gives it a reason to exist — calling
-`Mini.AuthorizationService` through `Mini.Infrastructure`'s shared `AuthorizationClient` (see
-`Mini.Infrastructure` above).
+sitting alongside `Applications.Apply` in production. Phase 17 was a skeleton: login only, no tenant
+resolution, no downstream API call.
+
+Phase 18 gave it a reason to exist: tenant resolution via `Mini.Infrastructure`'s newly-shared
+`ITenantContext` (see that entry), and a real call to `Mini.AuthorizationService` for a resource of its
+own (`"agent-portal"`, distinct from SampleApi's `"sample-api"`) through the same shared
+`AuthorizationClient` Phase 16 extracted. `IIdentityContext` (see below) needed no change to serve a
+browser-based caller — it was already claims-only, never assuming a bearer token specifically.
 _Avoid_: assuming "Agent Portal" names a real Equisoft product — it doesn't.
 
 **CachedDecision**:

@@ -1,0 +1,19 @@
+@model Mini.Infrastructure.ExternalServices.AuthorizationResult
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>Agent Portal — Authorization Result</title></head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 4rem auto;">
+  <h2>Authorization decision for resource "agent-portal"</h2>
+  <p>This came from <code>Mini.AuthorizationService</code>, called through
+     <code>Mini.Infrastructure</code>'s shared <code>AuthorizationClient</code>, forwarding this app's own
+     signed-in user's access token.</p>
+  <table border="1" cellpadding="6" style="border-collapse: collapse; width: 100%;">
+    <tbody>
+      <tr><td><strong>Authorized</strong></td><td>@Model.Authorized</td></tr>
+      <tr><td><strong>Reason</strong></td><td>@Model.Reason</td></tr>
+    </tbody>
+  </table>
+  <p><a href="/Home/Secure">Back to the secure page</a></p>
+</body>
+</html>

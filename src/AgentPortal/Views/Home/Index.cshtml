@@ -3,13 +3,20 @@
 <html>
 <head><title>Mini IdG — Agent Portal</title></head>
 <body style="font-family: sans-serif; max-width: 480px; margin: 4rem auto;">
-  <h2>Mini IdG — Agent Portal (skeleton)</h2>
+  <h2>Mini IdG — Agent Portal</h2>
   <p>This page is public — no login required to see it.</p>
   <p>
     A second MVC client, imitating <code>Applications.Apply</code> — logs in against the
     <strong>same</strong> IdentityServerHost as <a href="https://localhost:5006">MvcClient</a>, but with
     its own client registration (<code>agentportal</code>, not <code>mvcclient</code>).
   </p>
-  <p><a href="/Home/Secure">Go to the secure page</a> (triggers a login — try <code>alice</code>/<code>alice</code> or <code>bob</code>/<code>bob</code>).</p>
+  <p><a href="/Home/Secure">Go to the secure page</a> (triggers a login — try <code>alice</code>/<code>alice</code>
+     (acme) or <code>bob</code>/<code>bob</code> (globex) — no tenant-hint button needed here, since
+     IdentityServerHost stamps <code>tenant_id</code> from the user's own account either way).</p>
+  <p>
+    As of Phase 18, the secure page also has a <strong>Check authorization for "agent-portal"</strong>
+    button, which calls <code>Mini.AuthorizationService</code> through
+    <code>Mini.Infrastructure</code>'s shared <code>AuthorizationClient</code>.
+  </p>
 </body>
 </html>

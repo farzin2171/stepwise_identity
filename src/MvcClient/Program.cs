@@ -3,8 +3,8 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.Extensions.Options;
 using Mini.Infrastructure.ExternalServices;
 using Mini.Infrastructure.Http;
+using Mini.Infrastructure.MultiTenant;
 using MvcClient.Infrastructure.Configuration;
-using MvcClient.Infrastructure.MultiTenant;
 
 var builder = WebApplication.CreateBuilder(args);
 
