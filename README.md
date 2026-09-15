@@ -30,6 +30,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
 17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
 18. Agent Portal calls Mini.AuthorizationService via the shared client ✓
+19. Message bus (MassTransit/RabbitMQ port into Mini.Infrastructure) ✓
+20. Mini.MessageCenter (webhook fan-out) ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -79,6 +81,11 @@ A mini Identity Gateway, built from scratch in phases that mirror
   [README](src/Mini.Infrastructure/README.md) is worth reading for what it deliberately
   does **not** contain: the two `TenantContext`s and the two tenant registries stay
   separate, because they turned out to be different concepts wearing the same names.
+  Phase 19 added `Messaging/` — a port of `Libraries.Infrastructure/DIT.MessageQueue`
+  (MassTransit over RabbitMQ, in-memory, or Azure Service Bus), proven with a same-process
+  publish/consume round trip since no consuming service exists yet. This repo's first
+  Docker dependency — see `docker-compose.yml` and
+  [docs/adr/0001-messaging-transport.md](docs/adr/0001-messaging-transport.md).
 - [tests/StepwiseIdentity.Tests](tests/StepwiseIdentity.Tests) — the repo's single xunit
   project, added in Phase 11 when the first genuinely branching logic arrived. Decision
   tables only; everything else is verified end to end by a `test-phase*.ps1`.
@@ -238,6 +245,12 @@ Verification scripts (repo root):
   decision for the new `"agent-portal"` resource, a signed-in Globex user gets its own per-tenant
   decision from the same resource, and an anonymous request never reaches the authorization result at
   all (challenged to IdentityServerHost's login page instead).
+- [`test-phase19.ps1`](test-phase19.ps1) — proves the Phase 19 message-bus port works against a
+  REAL RabbitMQ instance, not just MassTransit's in-memory test harness: starts RabbitMQ via
+  `docker-compose.yml`, waits for its management API, then runs the `[RequiresRabbitMQ]`-tagged
+  xunit test that publishes a `PolicyChangedEvent` and confirms a consumer receives it over the
+  wire. This phase adds no HTTP surface of its own, so unlike every script above it, it drives
+  `dotnet test --filter` rather than raw HTTP.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

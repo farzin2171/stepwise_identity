@@ -15,6 +15,7 @@ Identity/          who is calling — claims-only, no browser assumed
 ExternalServices/  calling another service — tokens, service registry, the authorization client
 Http/              resilience policies for outbound calls
 MultiTenant/       which tenant a signed-in, claims-based user belongs to (Phase 18)
+Messaging/         the message-bus abstraction — MassTransit, provider-switching (Phase 19)
 ```
 
 ## What this is *not*
@@ -224,3 +225,114 @@ new `HomeController.CheckAuthorization()` action, the two build-time errors the 
 itself surfaced, and the new seeded `"agent-portal"` policy rows), and
 [`MvcClient/README.md`](../MvcClient/README.md) for a present-tense pointer note where it narrates the
 now-moved folder.
+
+## Phase 19 — `Messaging/`: the message-bus abstraction arrives, with no consumer yet
+
+Phases 20-23 are a five-phase arc, already scoped with the user: Mini.MessageCenter consuming
+`PolicyChangedEvent` and fanning it out to webhooks (20), Mini.AuthorizationService gaining a
+policy-admin API that publishes it (21), Agent Portal getting its own database and a policy-edit UI
+(22), and end-to-end wiring proving the whole path (23). Phase 19 is scoped to exactly one thing: port
+the message-bus abstraction itself and prove it works, before either the publisher (21) or the
+consumer (20) exists to need it — the same "need-driven, never ahead of a consumer" rule Phase 16
+followed for `AuthorizationClient`.
+
+**Real counterpart**: `C:\work\Libraries.Infrastructure\src\DIT.MessageQueue` (assembly
+`DigitalInsuranceTools.MessageQueue`), a thin MassTransit wrapper. What's ported:
+
+- `MessageQueueOptions.cs` — `MessageQueueProvider` (`InMemory` / `RabbitMQ` / `AzureServiceBus`,
+  default `InMemory`, same default and same "not for production" caveat the real
+  `Configuration/MessageQueueOptions.cs` documents) plus per-provider settings.
+- `MessageBusExtensions.AddMessageBus` — loosely modeled on
+  `DigitalInsuranceToolsBuilderExtensions.AddMessageQueue`: binds a config section (`"MessageBus"`
+  here, `"messageQueue"` there — same shape, different name since this sample has no
+  `IDigitalInsuranceToolsBuilder`) and branches on the provider to the matching MassTransit
+  `Using*Mq`/`UsingAzureServiceBus`/`UsingInMemory` call.
+- `PolicyChangedEvent.cs` — the domain event decided in the design session that produced
+  docs/adr/0001-messaging-transport.md, not a port of anything in `Data/` (see "Where this sample
+  simplifies" below).
+
+```csharp
+public static IServiceCollection AddMessageBus(
+    this IServiceCollection services,
+    IConfiguration configuration,
+    Action<IBusRegistrationConfigurator>? configureConsumers = null)
+{
+    var options = new MessageQueueOptions();
+    configuration.GetSection(MessageQueueOptions.SectionName).Bind(options);
+    services.AddSingleton(options);
+
+    services.AddMassTransit(x =>
+    {
+        configureConsumers?.Invoke(x);
+        switch (options.Provider)
+        {
+            case MessageQueueProvider.RabbitMQ:
+                x.UsingRabbitMq((context, cfg) => { /* host, vhost, credentials */ });
+                break;
+            // AzureServiceBus, InMemory ...
+        }
+    });
+    return services;
+}
+```
+
+**How it's proven**: since Mini.AuthorizationService/Mini.MessageCenter have no reason to call this
+yet, the proof lives in `tests/StepwiseIdentity.Tests/MessageBusTests.cs` — a
+`PolicyChangedEventConsumer` and two tests: `PublishedPolicyChangedEvent_IsReceivedByConsumer` uses
+MassTransit's own `ITestHarness` (in-memory, no broker) and runs on every `dotnet test`;
+`RabbitMqMessageBusTests.PublishedPolicyChangedEvent_RoundTripsOverRealRabbitMq` calls the SAME
+`AddMessageBus` extension configured for the `RabbitMQ` provider against a real broker, tagged
+`[Trait("Category", "RequiresRabbitMQ")]` so it's excluded from the default test run and invoked
+separately by `test-phase19.ps1`, which starts RabbitMQ via `docker-compose.yml` first.
+
+## Where this sample simplifies
+
+| Real `DIT.MessageQueue` | This sample |
+| --- | --- |
+| `TenantFilter<T>` stamps/reads `tenant-key`/`tenant-id` headers on every publish/consume | Not built yet. Nothing publishes or consumes a tenant-scoped message in Phase 19 — deferred to whichever of Phase 20/21 first needs tenant-scoped routing, per CONTEXT.md's "Message bus" entry |
+| `IEntityEventHelper` (`EntityCreatedAsync`, `EntityUpdatedAsync`, ...) wraps `IPublishEndpoint.Publish` | No wrapper. There's no publisher yet to justify one — a Phase 21 publisher decides then, per this repo's own rule against abstracting ahead of a real caller |
+| Custom `EntityNameFormatter` for RabbitMQ exchange naming | Not ported — MassTransit's default exchange naming is used as-is; nothing here depends on the real naming convention |
+| `AzureServiceBus` provider fully wired (OpenTelemetry tracing/metrics included) | `AzureServiceBusOptions` exists and binds, but the MassTransit transport itself throws `NotSupportedException` — wiring it needs the separate `MassTransit.Azure.ServiceBus.Core` package this repo doesn't reference. Same "documented, not exercised" split as Phase 8's `KeyManagement:Provider` `AzureKeyVault` branch |
+| No outbox pattern, no pre-wired retry/DLQ | Same here — confirmed absent in the real library by reading it directly, not a simplification this sample invented |
+
+## Things that broke, and why they're worth knowing
+
+- **`UsingAzureServiceBus` doesn't exist without a second package.** The first draft called
+  `x.UsingAzureServiceBus(...)` in the same `switch` as `UsingRabbitMq`, on the assumption the base
+  `MassTransit` package covers every transport the way `IBusRegistrationConfigurator` initially reads.
+  It doesn't — `dotnet build` failed with `CS1061` until the branch was replaced with an explicit
+  `NotSupportedException` naming the missing `MassTransit.Azure.ServiceBus.Core` package. Worth
+  knowing because it's the same lesson Phase 8 already taught for Key Vault, arriving through a
+  compiler error instead of a runtime one this time.
+- **Docker Desktop's engine wasn't reachable in the environment this phase was built in** — `docker
+  info`/`docker compose up` both fail with `open //./pipe/dockerDesktopLinuxEngine: The system cannot
+  find the file specified`, even though the Docker CLI and `docker compose` plugin are installed. The
+  in-memory `ITestHarness` test was verified passing (`dotnet test`, 1/1); the real-RabbitMQ round trip
+  in `test-phase19.ps1` was written, and verified to **fail with a clear, correct error message** when
+  Docker itself isn't running, but the actual pass-against-a-real-broker path needs a human to run it
+  where Docker Desktop's engine is actually up. Flagged here rather than claimed as done.
+
+## What's deliberately missing (as of Phase 19)
+
+- The tenant-stamping filter (`TenantFilter<T>`'s equivalent) — no publisher/consumer needs
+  tenant-scoped routing yet.
+- Any actual publisher or consumer in production code — `Mini.AuthorizationService` doesn't call
+  `Publish` yet (that's Phase 21), and there is no `Mini.MessageCenter` yet (Phase 20).
+- A wired `AzureServiceBus` transport (options bind; the transport itself is a documented
+  `NotSupportedException`).
+- Retry/dead-letter handling on the bus itself — confirmed absent in the real library too.
+
+## Try it yourself
+
+Run `.\test-phase19.ps1`. If Docker is running, it starts RabbitMQ, waits for its management API,
+then runs the real-broker round-trip test. If Docker ISN'T running, the script fails immediately with
+a message telling you so, rather than hanging or producing a confusing MassTransit connection
+timeout — try stopping Docker Desktop first and running it anyway, to see that failure mode for
+yourself before starting Docker back up and re-running it for real.
+
+Separately: comment out the `x.AddConsumer<PolicyChangedEventConsumer>()` line in
+`MessageBusTests.PublishedPolicyChangedEvent_IsReceivedByConsumer` and re-run it — the publish still
+succeeds (`harness.Published.Any<PolicyChangedEvent>()` stays true), but nothing ever consumes it. A
+useful reminder that a message bus decouples publish from consume so thoroughly that a forgotten
+consumer registration fails silently, not loudly — the same "cascade absorbs failure" shape Phase 12's
+connector chain already taught, one layer down the stack.

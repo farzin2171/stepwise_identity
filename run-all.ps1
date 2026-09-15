@@ -82,11 +82,45 @@ function Stop-All {
 if ($Stop) {
     Write-Host "Stopping everything run-all.ps1 started..."
     Stop-All
+    Write-Host "Stopping RabbitMQ (docker compose down)..." -ForegroundColor Cyan
+    docker compose -f (Join-Path $root "docker-compose.yml") down
     return
 }
 
 if (Test-Path $pidFile) {
     throw "$pidFile already exists - something may already be running. Run '.\run-all.ps1 -Stop' first."
+}
+
+# Phase 19: the first thing this script needs that isn't dotnet. Fail fast with a clear message
+# rather than let RabbitMQ's absence surface later as a confusing MassTransit connection error.
+Write-Host "Checking Docker is available..." -ForegroundColor Cyan
+docker info *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker doesn't appear to be running (docker info failed). Start Docker Desktop (or " +
+        "your Docker engine) and try again - Phase 19's message bus needs RabbitMQ, which run-all.ps1 " +
+        "starts via docker-compose."
+}
+
+Write-Host "Starting RabbitMQ (docker compose up -d)..." -ForegroundColor Cyan
+docker compose -f (Join-Path $root "docker-compose.yml") up -d
+if ($LASTEXITCODE -ne 0) { throw "docker compose up failed for RabbitMQ - see output above." }
+
+Write-Host "Waiting for RabbitMQ's management API on :15672..." -ForegroundColor Cyan
+$rabbitHealthy = $false
+for ($i = 0; $i -lt 60; $i++) {
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:15672/api/health/checks/alarms" `
+            -Headers @{ Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("guest:guest")) } `
+            -TimeoutSec 2 -UseBasicParsing
+        if ($response.StatusCode -eq 200) { $rabbitHealthy = $true; break }
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+if ($rabbitHealthy) {
+    Write-Host "  RabbitMQ healthy" -ForegroundColor Green
+} else {
+    throw "RabbitMQ never became healthy on :15672 - check 'docker compose logs rabbitmq'."
 }
 
 Write-Host "Building the solution..." -ForegroundColor Cyan

@@ -16,6 +16,10 @@
   <ItemGroup>
     <PackageReference Include="IdentityModel" Version="7.0.0" />
     <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="10.0.11" />
+    <!-- Phase 19: the message-bus port. MassTransit is the same wrapper the real
+         Libraries.Infrastructure/DIT.MessageQueue is built on. -->
+    <PackageReference Include="MassTransit" Version="8.3.4" />
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.3.4" />
   </ItemGroup>
 
 </Project>

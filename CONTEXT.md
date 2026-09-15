@@ -449,6 +449,76 @@ own (`"agent-portal"`, distinct from SampleApi's `"sample-api"`) through the sam
 browser-based caller — it was already claims-only, never assuming a bearer token specifically.
 _Avoid_: assuming "Agent Portal" names a real Equisoft product — it doesn't.
 
+**Message bus**:
+This sample's port of `Libraries.Infrastructure/DIT.MessageQueue` — a thin MassTransit wrapper, not
+a bespoke abstraction. Landed in Phase 19 as `Mini.Infrastructure/Messaging/`: a provider-switching
+options class (`MessageQueueProvider`: `InMemory` / `RabbitMQ` / `AzureServiceBus`) and an
+`AddMessageBus` extension that binds a `"MessageBus"` config section and branches to MassTransit's
+matching `Using*` call. Confirmed by reading the real repo: there is no outbox pattern and no
+pre-wired retry/dead-letter handling there either — this sample doesn't invent fidelity the
+original library doesn't have.
+
+**Narrower than the design session predicted, on purpose.** The real library's `TenantFilter<T>`
+(a publish/consume filter stamping `tenant-key`/`tenant-id` headers) was NOT ported in Phase 19 —
+nothing publishes or consumes yet that needs tenant-scoped routing, and building it ahead of a real
+consumer would repeat the mistake this repo's own rules warn against (see "Shared concerns go in
+Mini.Infrastructure" in the phase skill: port need-driven, not ahead of a consumer). It's deferred to
+whichever of Phase 20/21 first needs it. Also narrower: `AzureServiceBus` is a bound options shape
+with no MassTransit transport wired behind it (that needs a separate NuGet package this repo doesn't
+reference) — same "documented, not exercised" split as `KeyManagement:Provider`'s `AzureKeyVault`
+branch (Phase 8). No `IEntityEventHelper`-style wrapper was added either — Phase 19 has no publisher
+yet, so there was nothing to wrap; callers inject MassTransit's own `IPublishEndpoint`/`IBusControl`
+directly, and a Phase 21 publisher can decide then whether a wrapper earns its keep.
+_Avoid_: assuming this is a from-scratch design — it's a port, unlike the webhook pieces below. And
+don't assume the tenant filter or an event-helper wrapper exist yet — they don't, see above.
+
+**PolicyChangedEvent**:
+The domain event `Mini.AuthorizationService` will publish (starting Phase 21) on the message bus
+when a `Policy` row is edited (`TenantKey`, `ResourceName`, old/new `Condition`, `ChangedAtUtc`).
+Lives in `Mini.Infrastructure/Messaging/` as of Phase 19 — defined and proven to round-trip over both
+MassTransit's in-memory test harness and a real RabbitMQ instance (`test-phase19.ps1`), but nothing
+publishes or consumes it in production code yet; `PolicyChangedEventConsumer` in
+`tests/StepwiseIdentity.Tests` exists purely to prove the wire format works; Mini.AuthorizationService
+(the real publisher) and Mini.MessageCenter (the real consumer) both arrive later. Deliberately a
+named, domain-specific event rather than the real library's generic `EntityUpdatedEvent` envelope —
+chosen so `Mini.MessageCenter` doesn't need to know `EntityType == "Policy"` means something.
+_Avoid_: confusing with `CachedDecision`, which is an authorization *answer*, not a change
+notification. And don't read its Phase 19 existence as "policy changes are already wired to the
+bus" — nothing calls `Publish` outside a test yet.
+
+**Mini.MessageCenter** (planned):
+A new service that consumes `PolicyChangedEvent` off the message bus and fans it out to webhook
+subscribers. Its name follows this repo's `Mini.X` convention (like `Mini.UserService`,
+`Mini.AuthorizationService`), even though the real service it's loosely inspired by is named
+`Services.MessageCenter` in production.
+
+**Its webhook system has no real counterpart to port.** Both `Libraries.Infrastructure` and the real
+`Services.MessageCenter` were checked directly: neither has a subscription model, HMAC signing, or
+delivery-retry logic. The real `Services.MessageCenter` calls `Services.Notifications` via a plain,
+synchronous, unsigned, fire-once HTTP POST — nothing like a webhook fan-out. So `Mini.MessageCenter`'s
+webhook design is this course's own invention, not a port, and its README says so plainly rather than
+implying otherwise.
+_Avoid_: calling it "a port of Services.MessageCenter" unqualified — only the *name* and the general
+shape ("a service downstream services notify") come from there; the webhook mechanism is new.
+
+**Webhook subscription** (planned):
+A seeded row in `Mini.MessageCenter` naming a receiver: callback URL, a shared HMAC secret, and
+(for `Mini.AcmeApi`'s subscription only) a `TenantKey` scope — mirroring the "which tenant does this
+route to" lesson `Connector` already teaches. The generic stub receiver's subscription is
+unscoped, receiving every tenant's events. Seeded as rows at this phase, the same way
+`Mini.AuthorizationService`'s own policies were seeded before any admin API existed for them — a
+subscription-management API is explicitly future work, not part of this phase.
+_Avoid_: "webhook endpoint" alone — say subscription when meaning the stored row, delivery when
+meaning one outbound attempt.
+
+**PolicyChangeRequest** (planned):
+An audit-trail row in Agent Portal's own new database: who (the signed-in agent's `sub`) changed
+which policy, the before/after `Condition`, and when. Exists so Agent Portal has a genuine reason
+to own a database, without duplicating who owns the `Policy` concept itself — the canonical row
+stays in `Mini.AuthorizationService`; this is a log of *that a change happened*, not a second copy
+of the policy.
+_Avoid_: treating this as the source of truth for a policy's current state — it never is.
+
 **CachedDecision**:
 Phase 15's persisted authorization-decision cache — a row in `AuthorizationDbContext`, keyed by
 (tenant, caller, resource, a hash of the evaluation context), holding the last decision and an

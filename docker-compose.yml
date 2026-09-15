@@ -1,0 +1,27 @@
+
+# Phase 19: this repo's FIRST Docker dependency. Every prior phase's story was "clone it and
+# dotnet run" — no Azure subscription (Phase 8's Key Vault path is documented, not required),
+# no container runtime. RabbitMQ breaks that streak, and docs/adr/0001-messaging-transport.md
+# explains why it was still the right call: InMemory doesn't cross process boundaries (so it can't
+# stand in for Phase 20's Mini.AuthorizationService -> Mini.MessageCenter hop), and a live Azure
+# Service Bus namespace would make `test-phase19.ps1` depend on a billed, account-gated resource.
+#
+#   docker compose up -d      start RabbitMQ (management UI at http://localhost:15672, guest/guest)
+#   docker compose down       stop it
+#
+# run-all.ps1 does this for you as part of its normal startup/shutdown.
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: stepwise-identity-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP - what MassTransit's RabbitMQ transport actually connects to
+      - "15672:15672" # management UI / HTTP API - used only for the readiness check
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

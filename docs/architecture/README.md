@@ -18,6 +18,19 @@ right about the present. Don't "fix" a phase README to match.
 
 Docs that arrive with the phases that need them: `external-role-providers.md` (Phase 14).
 
+**Phase 19 added this repo's first Docker dependency and its first message bus.**
+`docker-compose.yml` at the repo root starts a single RabbitMQ container (`run-all.ps1` now checks
+`docker info` and runs `docker compose up -d`/`down` as part of its normal start/stop). `Mini.Infrastructure/Messaging/` ports `Libraries.Infrastructure/DIT.MessageQueue` as a thin
+MassTransit wrapper (`AddMessageBus`, provider-switching `MessageQueueOptions`) and defines the
+shared `PolicyChangedEvent` contract type both a future publisher (`Mini.AuthorizationService`,
+Phase 21) and future consumer (`Mini.MessageCenter`, Phase 20) will need. No cross-service call
+exists yet — Phase 19 proves the bus itself works with a same-process publish/consume round trip
+(MassTransit's in-memory test harness in `dotnet test`, and a real-RabbitMQ version in
+`test-phase19.ps1`) rather than adding a topic to the diagram below. See
+[Mini.Infrastructure's README](../../src/Mini.Infrastructure/README.md)'s Phase 19 section and
+[docs/adr/0001-messaging-transport.md](../adr/0001-messaging-transport.md) for the transport
+decision.
+
 `AgentPortal` (:5016) gained its first outbound arrow beyond `:5001` in Phase 18 — a call to
 `Mini.AuthorizationService` (:5015), forwarding its own signed-in user's access token, through the same
 `Mini.Infrastructure`-shared `AuthorizationClient` SampleApi already used since Phase 16. See the
@@ -37,7 +50,7 @@ diagram below.
 | [Mini.AcmeApi](../../src/Mini.AcmeApi) | 5014 | Acme Corporation's **own** user API. The first process here standing in for a system a *tenant* owns, not one the platform owns — a WebApi connector target. |
 | [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14) and, since Phase 18, AgentPortal too, both via `Mini.Infrastructure`'s shared, resilient `AuthorizationClient` (Phase 16). Own database: per-tenant `Policies` — now covering two independent resources, `sample-api` and (Phase 18) `agent-portal` — and since Phase 15 a persisted `CachedDecisions` table. |
 | [ExternalServicesStub](../../src/ExternalServicesStub) | 5012 | **Superseded** by Mini.UserService in Phase 11. Kept, not started by default. |
-| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). Since Phase 18 also holds `MultiTenant/` — `ITenantContext` and friends, extracted out of MvcClient once AgentPortal became a second, genuine consumer of the identical claims-based resolution. |
+| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). Since Phase 18 also holds `MultiTenant/` — `ITenantContext` and friends, extracted out of MvcClient once AgentPortal became a second, genuine consumer of the identical claims-based resolution. Since Phase 19 also holds `Messaging/` — the MassTransit-based message-bus port (`AddMessageBus`, `PolicyChangedEvent`), with no production publisher or consumer wired to it yet. |
 | [ConfigIngestionTool](../../src/Tools/ConfigIngestionTool) | — | Console tool. Writes config into the database. Run manually. |
 | [StepwiseIdentity.Tests](../../tests/StepwiseIdentity.Tests) | — | The repo's single xunit project. Decision tables only; everything else is a `test-phase*.ps1`. |
 
