@@ -74,6 +74,39 @@ public class AuthorizationDbContext : DbContext
                 Condition = """{"requiredRoles": ["Member"]}""",
                 IsEnabled = true,
                 Order = 1
+            },
+
+            // Phase 18. A second, independent resource — "agent-portal" — proving the shared
+            // AuthorizationClient (Mini.Infrastructure, since Phase 16) serves more than one consumer's
+            // own resource, not just SampleApi's "sample-api". Mirrors "sample-api"'s two policies'
+            // required roles exactly (Acme: Admin, Globex: Member) rather than varying them — the two
+            // resources are still distinguishable by ResourceName, Name and the reason string a decision
+            // returns ("Policy 'Acme Agent Portal Admins' granted access" vs. "Acme Admins"), and mirroring
+            // means test-phase18.ps1 can assert a real, positive "authorized: true" decision for both
+            // tenants instead of only ever proving the negative case.
+            new()
+            {
+                Id = Guid.NewGuid(),
+                TenantKey = "acme",
+                Name = "Acme Agent Portal Admins",
+                ResourceName = "agent-portal",
+                Description = "Admins can access Agent Portal's authorized action",
+                PolicyType = "Role",
+                Condition = """{"requiredRoles": ["Admin"]}""",
+                IsEnabled = true,
+                Order = 1
+            },
+            new()
+            {
+                Id = Guid.NewGuid(),
+                TenantKey = "globex",
+                Name = "Globex Agent Portal Members",
+                ResourceName = "agent-portal",
+                Description = "Members can access Agent Portal's authorized action",
+                PolicyType = "Role",
+                Condition = """{"requiredRoles": ["Member"]}""",
+                IsEnabled = true,
+                Order = 1
             }
         };
 

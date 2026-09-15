@@ -17,6 +17,19 @@ for the full, section-by-section write-up; this README's "Calling the API" and "
 in as a specific tenant" sections below cover the parts that predate that port and still
 apply.
 
+**Present-tense note (Phase 18):** `ITenantContext`/`TenantContext`/`Tenants`/
+`TenantResolutionMiddleware`/`RequireTenantAttribute` described below as living under this
+project's own `Infrastructure/MultiTenant/` folder now live in
+[`../Mini.Infrastructure/MultiTenant`](../Mini.Infrastructure/MultiTenant) instead — moved
+there once `AgentPortal` became a second, genuine consumer of the identical claims-based
+resolution (see `AgentPortal/README.md`'s Phase 18 section and
+`Mini.Infrastructure/README.md`'s own). This is a pure extraction: same types, same
+behavior, only the namespace changed (`MvcClient.Infrastructure.MultiTenant` →
+`Mini.Infrastructure.MultiTenant`) — every script below still passes unmodified. The
+sections that follow are left narrating "this project's own" tenant plumbing because
+that's what was true when Phase 2/3 wrote them; per this repo's own rule about not
+"fixing" a phase README to match present-day file locations, they aren't rewritten here.
+
 ## Why "server-side client" matters
 
 This app runs on a server you control, so it can hold a `ClientSecret` the browser never

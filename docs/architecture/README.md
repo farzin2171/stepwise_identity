@@ -1,6 +1,6 @@
 # Architecture
 
-**Current state of the system**, as of Phase 17. Cross-cutting docs live here — anything
+**Current state of the system**, as of Phase 18. Cross-cutting docs live here — anything
 that names more than one of this repo's projects.
 
 This is deliberately *not* a phase narrative. The per-project READMEs tell the story
@@ -18,10 +18,10 @@ right about the present. Don't "fix" a phase README to match.
 
 Docs that arrive with the phases that need them: `external-role-providers.md` (Phase 14).
 
-`AgentPortal` (:5016) is deliberately absent from the "who calls whom" diagram below — as of
-Phase 17 it only completes an OIDC login against `:5001`, the same box `MvcClient` already
-points at. It gains an outbound arrow of its own in Phase 18, once it has a reason to call
-`Mini.AuthorizationService`.
+`AgentPortal` (:5016) gained its first outbound arrow beyond `:5001` in Phase 18 — a call to
+`Mini.AuthorizationService` (:5015), forwarding its own signed-in user's access token, through the same
+`Mini.Infrastructure`-shared `AuthorizationClient` SampleApi already used since Phase 16. See the
+diagram below.
 
 ## The processes
 
@@ -30,14 +30,14 @@ points at. It gains an outbound arrow of its own in Phase 18, once it has a reas
 | [IdentityServerHost](../../src/IdentityServerHost) | 5001 | The authorization server. The mini-IdG proper. |
 | [ExternalIdp](../../src/ExternalIdp) | 5011 | A *second*, independent Duende server. Stands in for a partner's IdP. Knows nothing about tenants. |
 | [MvcClient](../../src/MvcClient) | 5006 | Server-side confidential client. Stands in for `Applications.Apply`. |
-| [AgentPortal](../../src/AgentPortal) | 5016 | Phase 17's second server-side confidential client, its own registration (`agentportal`) on the same IdentityServerHost. Illustrative — not a port of a specific real app — of "more than one MVC/BFF client hits the same IdG," as `Applications.Portal`/`Applications.AdminConsole`/`Applications.CustomerPortal` do alongside `Applications.Apply` in production. A skeleton: login only, no tenant resolution, no downstream call, until Phase 18. |
+| [AgentPortal](../../src/AgentPortal) | 5016 | Phase 17's second server-side confidential client, its own registration (`agentportal`) on the same IdentityServerHost. Illustrative — not a port of a specific real app — of "more than one MVC/BFF client hits the same IdG," as `Applications.Portal`/`Applications.AdminConsole`/`Applications.CustomerPortal` do alongside `Applications.Apply` in production. Phase 17 was login-only; Phase 18 added tenant resolution (`Mini.Infrastructure`'s shared `ITenantContext`) and a real call to Mini.AuthorizationService for its own `"agent-portal"` resource. |
 | [SampleApi](../../src/SampleApi) | 5007 | JWT-bearer-protected API. Carries `Services.Authorization`'s identity conventions. |
 | [ReactSpa](../../src/ReactSpa) | 5173 | Browser public client. No secret, PKCE only. |
 | [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API, and since Phase 12 the connector machinery that decides where a tenant's users come from. |
 | [Mini.AcmeApi](../../src/Mini.AcmeApi) | 5014 | Acme Corporation's **own** user API. The first process here standing in for a system a *tenant* owns, not one the platform owns — a WebApi connector target. |
-| [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14) via `Mini.Infrastructure`'s shared, resilient `AuthorizationClient` since Phase 16. Own database: per-tenant `Policies`, and since Phase 15 a persisted `CachedDecisions` table. |
+| [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14) and, since Phase 18, AgentPortal too, both via `Mini.Infrastructure`'s shared, resilient `AuthorizationClient` (Phase 16). Own database: per-tenant `Policies` — now covering two independent resources, `sample-api` and (Phase 18) `agent-portal` — and since Phase 15 a persisted `CachedDecisions` table. |
 | [ExternalServicesStub](../../src/ExternalServicesStub) | 5012 | **Superseded** by Mini.UserService in Phase 11. Kept, not started by default. |
-| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). |
+| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). Since Phase 18 also holds `MultiTenant/` — `ITenantContext` and friends, extracted out of MvcClient once AgentPortal became a second, genuine consumer of the identical claims-based resolution. |
 | [ConfigIngestionTool](../../src/Tools/ConfigIngestionTool) | — | Console tool. Writes config into the database. Run manually. |
 | [StepwiseIdentity.Tests](../../tests/StepwiseIdentity.Tests) | — | The repo's single xunit project. Decision tables only; everything else is a `test-phase*.ps1`. |
 
@@ -57,41 +57,46 @@ to also start the superseded `ExternalServicesStub` for a side-by-side compariso
               (confid.) │        │  + svc token  │ (PKCE) │
                         ▼        ▼               ▼        ▼
               ┌───────────────────────┐      ┌──────────────┐
-              │  IdentityServerHost   │      │  SampleApi   │
-              │        :5001          │      │    :5007     │
-              └──┬─────────────┬──────┘      └──────────────┘
-                 │             │ ▲                   ▲
-    federated    │             │ │                   │ validates tokens against
-    login (OIDC) │             │ │                   │ :5001 discovery + JWKS
-                 │  self-issued│ │service-account    │ (no call back to :5001
-                 │  JWT (reads,│ │token (id          │  per request)
-                 │  at token   │ │conversion)        │
-                 │  issuance)  │ │                   │
-                 ▼             ▼ │                   │
-        ┌──────────────┐  ┌──────────────────────┐   │
-        │  ExternalIdp │  │   Mini.UserService   │   │
-        │    :5011     │  │        :5013         │   │
-        └──────────────┘  └───────────┬──────────┘   │
-                                      │              │
-                   service-account    │              │
-                   token, per tenant  │              │
-                   (userservice-svc.  │              │
-                    acme) + Origin    │              │
-                    UserIdentifier    ▼              │
-                          ┌──────────────────────┐   │
-                          │     Mini.AcmeApi     │   │
-                          │        :5014         │   │
-                          │  a TENANT's own API  │   │
-                          └──────────────────────┘   │
-                                                     │
-                MvcClient/ReactSpa ──────────────────┘
+              │  IdentityServerHost   │      │  SampleApi   │───┐
+              │        :5001          │      │    :5007     │   │ user token,
+              └──┬─────────────┬──────┘      └──────────────┘   │ forwarded (Ph.14)
+                 │             │ ▲                               ▼
+    federated    │             │ │                        ┌──────────────────────────┐
+    login (OIDC) │             │ │                        │ Mini.AuthorizationService │
+                 │  self-issued│ │service-account          │          :5015           │
+                 │  JWT (reads,│ │token (id                └────────────▲─────────────┘
+                 │  at token   │ │conversion)                            │ user token,
+                 │  issuance)  │ │                                       │ forwarded (Ph.18)
+                 ▼             ▼ │                          ┌────────────┴──┐
+        ┌──────────────┐  ┌──────────────────────┐          │  AgentPortal  │◀── browser
+        │  ExternalIdp │  │   Mini.UserService   │          │     :5016     │
+        └──────────────┘  └───────────┬──────────┘          └───────┬───────┘
+                                      │                    OIDC login│ (confid., :5001)
+                   service-account    │
+                   token, per tenant  │
+                   (userservice-svc.  │
+                    acme) + Origin    ▼
+                    UserIdentifier
+                          ┌──────────────────────┐
+                          │     Mini.AcmeApi     │
+                          │        :5014         │
+                          │  a TENANT's own API  │
+                          └──────────────────────┘
 ```
+
+`AgentPortal` (right) logs into the same `IdentityServerHost` box `MvcClient` does and, since Phase 18,
+forwards its own signed-in user's access token to `Mini.AuthorizationService` — the same service
+SampleApi already called since Phase 14, through the same `Mini.Infrastructure`-shared
+`AuthorizationClient` (Phase 16). The two consumers ask about two different resource names
+(`"sample-api"`, `"agent-portal"`) with independently-seeded policies — see
+`Mini.AuthorizationService/README.md` and `AgentPortal/README.md`'s Phase 18 section.
 
 ### The four ways a token moves
 
-1. **User login (OIDC authorization code).** Browser → MvcClient or ReactSpa → `:5001`.
-   MvcClient is confidential (has a secret); ReactSpa is public (PKCE only, can't keep
-   one). Both come back with an ID token and an access token for `api1`.
+1. **User login (OIDC authorization code).** Browser → MvcClient, AgentPortal, or ReactSpa →
+   `:5001`. MvcClient and AgentPortal are both confidential (each has its own secret, its
+   own client registration — Phase 17); ReactSpa is public (PKCE only, can't keep one).
+   All three come back with an ID token and an access token for `api1`.
 
 2. **Federated login.** `:5001` → `:5011`. IdentityServerHost is itself an OIDC *client*
    of ExternalIdp. The result lands on an external cookie which `ExternalController`
@@ -99,9 +104,10 @@ to also start the superseded `ExternalServicesStub` for a side-by-side compariso
    (`/signin-external-idp`) and database-backed dynamic ones
    (`/federation/{scheme}/signin`).
 
-3. **Forwarded user token.** MvcClient/ReactSpa → `:5007`, carrying the signed-in user's
-   own access token. SampleApi validates it offline against `:5001`'s published JWKS —
-   it never calls back per request.
+3. **Forwarded user token.** MvcClient/ReactSpa → `:5007` (SampleApi), and — since Phase 18 —
+   AgentPortal → `:5015` (Mini.AuthorizationService) too, all carrying the signed-in user's
+   own access token rather than fetching a fresh one. Both callees validate it offline
+   against `:5001`'s published JWKS — neither calls back per request.
 
 4. **Service-account token.** A client-credentials grant against `:5001`, no user involved.
    Four consumers as of Phase 12: MvcClient → `:5007` as `mvcclient-svc.{tenant}`,
@@ -139,7 +145,7 @@ accident of the sample — it mirrors the real architecture.
 | Registry | Knows | Populated from |
 | --- | --- | --- |
 | `IdentityServerHost/Tenants.cs` | key → display name | hardcoded |
-| `MvcClient/Infrastructure/MultiTenant/Tenants.cs` | key → `Tenant` object | hardcoded |
+| `Mini.Infrastructure/MultiTenant/Tenants.cs` (MvcClient's own copy through Phase 17, shared with AgentPortal since Phase 18) | key → `Tenant` object | hardcoded |
 | `Mini.UserService`'s `Tenants` table | key → GUID, name, `IsActive` | **SQL, writable over HTTP** |
 
 No shared table, no shared code, no shared type. In production, Apply's `Tenants` table

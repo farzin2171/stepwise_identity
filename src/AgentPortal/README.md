@@ -1,4 +1,4 @@
-# AgentPortal — Phase 17: a second MVC client
+# AgentPortal — Phase 18: calling Mini.AuthorizationService via the shared client
 
 ```
 1. Foundation ✓
@@ -18,7 +18,7 @@
 15. (persist authorization decisions across restarts) ✓
 16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
 17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
-18. (Agent Portal calls Mini.AuthorizationService via the shared client) ← next
+18. Agent Portal calls Mini.AuthorizationService via the shared client ✓
 ```
 
 ## Why this phase
@@ -221,3 +221,209 @@ cd . && dotnet run --urls https://localhost:5016
 
 Or just `.\run-all.ps1` from the repo root — it now starts `AgentPortal` alongside everything
 else.
+
+## Phase 18 — calling Mini.AuthorizationService via the shared client
+
+### Why this phase
+
+Phase 17 deliberately left Agent Portal a skeleton: login only, no tenant, no downstream call. This
+phase gives it a reason to exist — the same reason Phase 16 extracted `AuthorizationClient` out of
+SampleApi into `Mini.Infrastructure` in the first place: "a second, real consumer (Phase 17's Agent
+Portal) is coming" (see `Mini.Infrastructure/README.md`'s Phase 16 section). That prediction comes
+true here. Agent Portal now resolves a tenant and calls `Mini.AuthorizationService`, through the exact
+same shared, resilient `IAuthorizationClient` SampleApi already uses — proving the extraction serves a
+genuinely independent second caller, not just a second copy of the first one's code path.
+
+Getting there required one more piece first: Agent Portal's tenant resolution. `ITenantContext` /
+`TenantContext` / `Tenants` / `TenantResolutionMiddleware` existed only in `MvcClient`'s own
+`Infrastructure/MultiTenant` folder — private to that project since Phase 3. The moment a *second*
+MVC/BFF client needs the identical claims-based resolution, that's precisely the trigger this repo's
+own "shared concerns go in `Mini.Infrastructure`" rule (see its README) calls for, so this phase moves
+that folder there first, then wires Agent Portal to it the same way `MvcClient/Program.cs` always has.
+`RequireTenantAttribute` moved with it, for the same reason.
+
+### What moved: `Mini.Infrastructure/MultiTenant/`
+
+`Tenant.cs`, `Tenants.cs`, `ITenantContext.cs`, `TenantContext.cs`, `TenantResolutionMiddleware.cs`, and
+`RequireTenantAttribute.cs` — out of `MvcClient/Infrastructure/MultiTenant/`, namespace changed from
+`MvcClient.Infrastructure.MultiTenant` to `Mini.Infrastructure.MultiTenant`, otherwise byte-identical.
+This is a pure extraction, not a behavior change: `MvcClient`'s own `test-phase2.ps1`, `test-api.ps1`,
+and `test-multitenancy-external-services.ps1` all pass unmodified against the moved code (see "Things
+that broke" below for what it took to get there). See `Mini.Infrastructure/README.md`'s own Phase 18
+section for the extraction write-up from that project's side, and `MvcClient/README.md` for a pointer
+note.
+
+**What did NOT move, and why**: IdentityServerHost's own `TenantContext.cs`/`Tenants.cs` stay exactly
+where Phase 10 left them — they resolve tenant from `acr_values` *before* authentication and treat "no
+tenant" as normal, a genuinely different concept from the claims-based `ITenantContext` this phase
+shares between MvcClient and Agent Portal (see `Mini.Infrastructure/README.md`'s "The two
+`TenantContext`s stay separate" section, still accurate and untouched by this phase).
+
+### Agent Portal's `Program.cs` (new in Phase 18)
+
+```csharp
+builder.Services.AddScoped<ITenantContext, TenantContext>();
+builder.Services.AddScoped<IIdentityContext, IdentityContext>();
+
+builder.Services.Configure<ExternalServicesConfiguration>(builder.Configuration.GetSection("ExternalServicesApi"));
+builder.Services.AddHttpClient<IAuthorizationClient, AuthorizationClient>((services, client) =>
+       {
+           var externalServices = services.GetRequiredService<IOptions<ExternalServicesConfiguration>>().Value;
+           var serviceDefinition = externalServices.GetServiceDefinition("AuthorizationService");
+           client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
+       })
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
+
+// oidc options, additions only:
+options.Scope.Add("api1");
+options.Scope.Add("tenant");
+options.ClaimActions.MapUniqueJsonKey("tenant_id", "tenant_id");
+options.ClaimActions.MapUniqueJsonKey("role", "role");
+```
+
+Same registration shape SampleApi's `Program.cs` already uses for `IAuthorizationClient`, same
+`ExternalServicesApi:ServiceDefinitions:AuthorizationService` config section (added to
+`appsettings.json`, pointed at `:5015`). The two new scopes and two new `ClaimActions` lines are the
+same fix MvcClient's own Phase 3 section already documents for the identical problem — added here
+proactively, having already paid for that lesson once.
+
+### `HomeController.CheckAuthorization()`
+
+```csharp
+[Authorize]
+[RequireTenant]
+public async Task<IActionResult> CheckAuthorization()
+{
+    var accessToken = await HttpContext.GetTokenAsync("access_token");
+    var roleFromToken = User.Claims.FirstOrDefault(c => c.Type == "role")?.Value ?? "Member";
+    var context = new Dictionary<string, string>
+    {
+        { "role", roleFromToken },
+        { "caller", identityContext.IdentityType.ToString() }
+    };
+
+    var result = await authorizationClient.EvaluateAsync("agent-portal", identityContext, accessToken, context);
+    return View("AuthorizationResult", result);
+}
+```
+
+Mirrors `MvcClient.HomeController.CallApi()` exactly: forward the signed-in user's own access token
+(no fresh token fetch), render the result on a view rather than returning JSON. The one deliberate
+difference from SampleApi's `/authorize/{resourceName}` endpoint: the resource name is `"agent-portal"`,
+not `"sample-api"` — a second, independent resource, with its own seeded policies (see below), so the
+two consumers of the shared client are actually distinguishable in a test run rather than one silently
+reusing the other's rows.
+
+### `IIdentityContext` for a browser-based caller
+
+The prompt for this phase asked whether `IIdentityContext` (SampleApi's, ported from
+`Services.Authorization`) needed a browser-shaped sibling. It doesn't: `IdentityContext.Populate`
+already works from any `ClaimsPrincipal`, and `Mini.Infrastructure.Identity.IdentityContextMiddleware`
+already does nothing but call it once per request from `context.User`. Agent Portal registers both
+exactly as SampleApi does, and its **cookie**-authenticated `ClaimsPrincipal` populates the same
+`Subject`/`TenantKey`/`IdentityType` fields a **bearer-token**-authenticated one would — the interface
+never assumed a bearer token, only a `ClaimsPrincipal`. No new type, no adapter — see
+`Mini.Infrastructure/Identity/IdentityContext.cs`, unchanged by this phase.
+
+### `IdentityServerConfig.json`
+
+```json
+{
+  "clientId": "agentportal",
+  "allowedScopes": [ "openid", "profile", "api1", "tenant" ]
+}
+```
+
+`api1`/`tenant` added, mirroring `mvcclient`'s entry exactly — the "no downstream API call, no tenant
+resolution" line from Phase 17's `allowedScopes` comment is now false, on purpose.
+
+### New seed data: a second resource in `Mini.AuthorizationService`
+
+Two new `Policy` rows, `ResourceName = "agent-portal"`, one per tenant — `acme` requires `Admin`,
+`globex` requires `Member`, **mirroring** `"sample-api"`'s existing two policies' required roles exactly
+rather than varying them. That was a deliberate choice, not the only reasonable one: varying them (say,
+swapping which tenant needs which role) would make a resource-name mix-up impossible to miss, but it
+would also mean this phase's test could only ever prove the *negative* case for both tenants (alice is
+`Admin`, bob is `Member` — the "sample-api" roles already fit them). Mirroring keeps the roles the
+same and still keeps the two resources genuinely distinguishable — by `ResourceName`, `Policy.Name`,
+and the exact reason string a decision returns (`"Policy 'Acme Agent Portal Admins' granted access"` is
+never confusable with `"Policy 'Acme Admins' granted access"`) — while letting `test-phase18.ps1` assert
+a real `authorized: true` decision for both tenants, not just a real `false`.
+
+## Comparison against the real counterparts (Phase 18 additions)
+
+| This sample | Real counterpart | Notes |
+| --- | --- | --- |
+| Agent Portal calling `Mini.AuthorizationService` via `HomeController.CheckAuthorization()` | Not confirmed against a real downstream-authorization-check call site in `Applications.Apply` — a repo-wide look at `C:\work\Applications.IdentityGateway\docs` (the only `Applications.IdentityGateway`-adjacent path reachable in this environment) turned up architecture and identity-gateway material, not an `Applications.Apply` controller calling `Services.Authorization`. Being honest about the gap rather than guessing: the *shape* here (forward the user's own token, ask a named resource, render/branch on the answer) is modeled on this repo's own SampleApi/Phase-14 pattern, not verified against a specific real Apply call site. | See `SampleApi/docs/identity-context-and-conventions.md` for what *was* confirmed against `Services.Authorization` (the identity/claims conventions this whole chain sits on). |
+| `Mini.Infrastructure/MultiTenant`'s extraction | `Applications.Apply`'s own `Infrastructure/MultiTenant` — already the source for MvcClient's Phase-2/3 port | Unchanged comparison; only the sample-side location moved, not the real counterpart being ported from. |
+
+## Where this sample simplifies (Phase 18 additions)
+
+| Real IdG / Apply | This sample (Phase 18) |
+| --- | --- |
+| A real Apply-like client would likely centralize "is this caller authorized" behind `[Authorize(Policy = "...")]`, resolved by an `IAuthorizationPolicyProvider` that calls out to the authorization service inside the framework's own pipeline (see `Mini.Infrastructure/ExternalServices/AuthorizationClient.cs`'s header comment on `DIT.Authorization.Client`). | Agent Portal calls `EvaluateAsync` explicitly from the controller action, exactly like SampleApi already does — porting the policy-provider integration itself remains future work, not this phase's, same caveat Phase 16 already recorded. |
+| A real deployment would likely have a *different* resource per meaningful action Agent Portal exposes, not one hardcoded resource name. | `"agent-portal"` is a single, fixed resource name — there's exactly one authorized action in this skeleton, so one resource is enough to prove the pattern; a second action would need its own resource name and its own seed rows, not a parameter. |
+
+## Things that broke, and why they're worth knowing
+
+**1. `RequestDelegate`/`HttpContext` don't resolve in `Mini.Infrastructure` without an explicit
+`using`.** Moving `TenantResolutionMiddleware.cs` into `Mini.Infrastructure` and building immediately
+failed with `CS0246: The type or namespace name 'RequestDelegate' could not be found`. The file
+compiled fine inside `MvcClient` (an `Sdk.Web` project, whose implicit global usings include
+`Microsoft.AspNetCore.Http`) but not inside `Mini.Infrastructure` (a plain `Sdk` class library with a
+`FrameworkReference` to `Microsoft.AspNetCore.App` for the *types*, but none of the Web SDK's implicit
+usings for the *namespace*). The fix was one explicit `using Microsoft.AspNetCore.Http;` — but the
+lesson generalizes: every other file already in `Mini.Infrastructure/Identity` that needs
+`HttpContext`/`RequestDelegate` was written with that `using` from the start (nobody had moved a
+*middleware* class into this project before); moving `RequireTenantAttribute.cs` next hit the exact
+same shape of error one namespace over (`IServiceProvider.GetRequiredService` needs
+`Microsoft.Extensions.DependencyInjection`, again implicit in `Sdk.Web`, not in a plain library). A
+`FrameworkReference` gets you the assemblies; it does not get you the Web SDK's implicit global usings.
+
+**2. `AuthorizationResult` is ambiguous inside a controller that has `[Authorize]` in scope.**
+`HomeController.CheckAuthorization()`'s return type,
+`Mini.Infrastructure.ExternalServices.AuthorizationResult`, collided with
+`Microsoft.AspNetCore.Authorization.AuthorizationResult` — a real ASP.NET Core type most controllers
+never reference directly, but that `using Microsoft.AspNetCore.Authorization;` (needed for the
+`[Authorize]` attribute) pulls into scope regardless. `CS0104: 'AuthorizationResult' is an ambiguous
+reference` on the very first build. Fixed with a using-alias
+(`using AuthorizeAttribute = Microsoft.AspNetCore.Authorization.AuthorizeAttribute;`) instead of fully
+qualifying every `[Authorize]` in the file. Worth knowing for anyone naming a DTO `*Result` in a
+project that also does ASP.NET Core authorization — `AuthorizationResult` specifically is already
+taken by the framework, and the collision only shows up once both usings are in the same file, which a
+narrower, single-purpose controller might never have hit before now.
+
+## What's deliberately missing (as of Phase 18)
+
+- **A policy-provider integration.** `EvaluateAsync` is still called explicitly from the controller
+  action, not resolved automatically via `[Authorize(Policy = "...")]` — see "Where this sample
+  simplifies" above.
+- **More than one authorized action.** Agent Portal has exactly one thing to be authorized for
+  (`"agent-portal"`); a second feature would need its own resource name and seed rows, not implied by
+  this phase's plumbing.
+- **Hostname-based tenant resolution**, same gap `Mini.Infrastructure/MultiTenant/TenantResolutionMiddleware.cs`'s
+  own header comment has always named — unaffected by this phase's extraction.
+
+## Try it yourself
+
+Start everything with `.\run-all.ps1`, then:
+
+1. Browse to `https://localhost:5016`, sign in as `alice`/`alice` (Acme, role `Admin`), and click
+   **Check authorization for "agent-portal"** on the secure page — expect `Authorized: True`, reason
+   naming the `Acme Agent Portal Admins` policy.
+2. Sign out, sign back in as `bob`/`bob` (Globex, role `Member`) — the SAME resource, a DIFFERENT
+   policy row, still `Authorized: True`.
+3. Break it on purpose: in `src/Mini.AuthorizationService/Data/AuthorizationDbContext.cs`, flip Acme's
+   `agent-portal` policy's `requiredRoles` from `["Admin"]` to `["Member"]`, delete the two
+   `agent-portal` rows from the `MiniAuthorization` database (so `SeedData` re-inserts the edited
+   version on next start — it only seeds when the `Policies` table is empty), restart
+   `Mini.AuthorizationService`, and re-run `test-phase18.ps1`'s second assertion. Alice (still `Admin`)
+   now gets `Authorized: False` for `agent-portal` while `test-phase14.ps1`'s `sample-api` check for the
+   same user still passes — proof the two resources' policies really are independent rows, not a shared
+   fallback.
+
+Prefer not to click through a browser? [`test-phase18.ps1`](../../test-phase18.ps1) (repo root) drives
+the whole thing over raw HTTP: AgentPortal login still works (regression), a real `authorized: true`
+decision for both `alice`/acme and `bob`/globex against the SAME `"agent-portal"` resource, and an
+anonymous request never reaching the authorization result at all.

@@ -1,20 +1,29 @@
-@model IEnumerable<System.Security.Claims.Claim>
+@model (IEnumerable<System.Security.Claims.Claim> Claims, Mini.Infrastructure.MultiTenant.Tenant? Tenant)
 @{ Layout = null; }
 <!DOCTYPE html>
 <html>
 <head><title>Agent Portal — Secure Page</title></head>
 <body style="font-family: sans-serif; max-width: 480px; margin: 4rem auto;">
   <h2>You're signed in — Agent Portal</h2>
+  <p>
+    <strong>Tenant (from <code>ITenantContext</code>):</strong>
+    @(Model.Tenant is not null ? $"{Model.Tenant.Name} ({Model.Tenant.Key})" : "none resolved")
+  </p>
   <p>These claims came from the ID token IdentityServerHost issued to <code>agentportal</code>:</p>
   <table border="1" cellpadding="6" style="border-collapse: collapse; width: 100%;">
     <thead><tr><th align="left">Claim type</th><th align="left">Value</th></tr></thead>
     <tbody>
-      @foreach (var claim in Model)
+      @foreach (var claim in Model.Claims)
       {
         <tr><td>@claim.Type</td><td>@claim.Value</td></tr>
       }
     </tbody>
   </table>
+  <p>
+    <a href="/Home/CheckAuthorization" style="display: inline-block; padding: 0.5rem 1rem; background: #145; color: #fff; text-decoration: none; border-radius: 4px;">
+      Check authorization for "agent-portal"
+    </a>
+  </p>
   <p><a href="/Home/Index">Back</a></p>
 </body>
 </html>

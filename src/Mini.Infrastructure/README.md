@@ -14,6 +14,7 @@ if that happens, that's a "things that broke" entry, not a silent refactor.
 Identity/          who is calling — claims-only, no browser assumed
 ExternalServices/  calling another service — tokens, service registry, the authorization client
 Http/              resilience policies for outbound calls
+MultiTenant/       which tenant a signed-in, claims-based user belongs to (Phase 18)
 ```
 
 ## What this is *not*
@@ -180,3 +181,46 @@ connection refusal failed instantly with no retry at all), restarts it, and conf
 hitting the exact CircuitBreaker() 30-second-open-window gotcha Phase 9's README already named
 for `ExternalServicesStub`. See that script and `SampleApi/README.md`'s Phase 16 section for the
 full "things that broke" account.
+
+## Phase 18 — `MultiTenant/` arrives: `AuthorizationClient`'s prediction, and a second extraction
+
+Phase 16's header comment predicted `AuthorizationClient`'s second consumer would be "Phase 17's Agent
+Portal." Phase 18 makes that call happen — and along the way, triggers a second extraction into this
+project, for exactly the same reason the first one (Phase 10) happened: a genuinely shared concern that
+used to exist in exactly one place now has a second, real consumer.
+
+**What moved:** `Tenant.cs`, `Tenants.cs`, `ITenantContext.cs`, `TenantContext.cs`,
+`TenantResolutionMiddleware.cs`, and `RequireTenantAttribute.cs` — out of `MvcClient`'s own
+`Infrastructure/MultiTenant/` folder (private there since Phase 2/3), into
+`Mini.Infrastructure/MultiTenant/`, namespace `MvcClient.Infrastructure.MultiTenant` →
+`Mini.Infrastructure.MultiTenant`. Every type and every line of logic is unchanged — this is a pure
+move, verified by re-running `MvcClient`'s own `test-phase2.ps1`, `test-api.ps1`, and
+`test-multitenancy-external-services.ps1` unmodified against the moved code (all three still pass).
+`AgentPortal` is the second, real consumer: it registers `ITenantContext`/`TenantContext` and
+`TenantResolutionMiddleware` exactly as `MvcClient/Program.cs` always has, sharing the SAME
+`Tenants.All` dictionary (`acme`/`globex`) rather than maintaining an independent copy.
+
+**Why this one is a *shared* extraction and not another "these look alike but aren't" story** (the
+kind this README's "What was deliberately NOT extracted" section is full of): the whole point of that
+section is that two things with the same NAME can be different CONCEPTS — IdentityServerHost's
+`TenantContext` and MvcClient's disagree about whether "no tenant" is an error, so merging them would
+erase a real distinction. `MvcClient`'s and `AgentPortal`'s `ITenantContext` don't have that problem —
+they are the identical concept (resolve a tenant from the `tenant_id` claim on an already-authenticated
+user, treat absence as a 401), used by two structurally identical MVC/BFF clients. There was no
+invariant to reconcile; both callers already agreed on every one.
+
+**What did NOT move: `IdentityContext`/`IdentityContextMiddleware` needed no change at all.**
+`AgentPortal` is this project's first BROWSER-based consumer of `IIdentityContext` — every consumer
+before it (SampleApi, `Mini.AuthorizationService`) populated it from a bearer token's claims. The
+interface never assumed a bearer token, only a `ClaimsPrincipal` (see `Identity/IIdentityContext.cs`),
+so `AgentPortal` registers the exact same `IdentityContext`/`IdentityContextMiddleware` pair and gets a
+correctly-populated `Subject`/`TenantKey`/`IdentityType` from its cookie-authenticated
+`ClaimsPrincipal` with zero code changes here. Worth noting as the flip side of this README's own
+founding lesson: sometimes the thing that looks like it might need porting again turns out to already
+be general enough, and the honest thing to do is say so rather than add an unnecessary abstraction.
+
+See [`AgentPortal/README.md`](../AgentPortal/README.md)'s Phase 18 section for the consumer side (the
+new `HomeController.CheckAuthorization()` action, the two build-time errors the `MultiTenant/` move
+itself surfaced, and the new seeded `"agent-portal"` policy rows), and
+[`MvcClient/README.md`](../MvcClient/README.md) for a present-tense pointer note where it narrates the
+now-moved folder.
