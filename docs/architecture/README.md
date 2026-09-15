@@ -1,6 +1,6 @@
 # Architecture
 
-**Current state of the system**, as of Phase 18. Cross-cutting docs live here — anything
+**Current state of the system**, as of Phase 22. Cross-cutting docs live here — anything
 that names more than one of this repo's projects.
 
 This is deliberately *not* a phase narrative. The per-project READMEs tell the story
@@ -49,6 +49,21 @@ decision.
 `Mini.Infrastructure`-shared `AuthorizationClient` SampleApi already used since Phase 16. See the
 diagram below.
 
+**Phase 22 gave AgentPortal its own database** — `AgentPortalDb`, holding one table
+(`PolicyChangeRequests`) — and a second, DIFFERENT call to `:5015`: a small local `PolicyAdminClient`
+(not the shared `Mini.Infrastructure` one — see `AgentPortal/README.md`'s Phase 22 section for why it
+stayed local) that reads the current `agent-portal` policy for the caller's own tenant and, on submit,
+calls Phase 21's `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` — same forwarded
+user-token pattern as the existing authorization check. This is the first phase to make Phase 21's
+documented, unfixed gap (the PUT endpoint never checks the caller's own tenant against the route's
+`{tenantKey}`) reachable from a real UI instead of only a raw HTTP script — AgentPortal's controller
+always sends the caller's own resolved tenant key, so it never triggers the gap itself, but nothing on
+either side of the call defends against a request that would. It also surfaced a genuine ordering bug in
+Phase 21's own endpoint: `db.SaveChanges()` runs BEFORE `await publishEndpoint.Publish(...)`, so with an
+unreachable message broker the write can succeed on the server while the caller's HTTP request times out
+— see `AgentPortal/README.md`'s Phase 22 "Things that broke" and `CONTEXT.md`'s `PolicyChangeRequest`
+entry for the reproduction.
+
 ## The processes
 
 | Project | Port | What it is |
@@ -56,7 +71,7 @@ diagram below.
 | [IdentityServerHost](../../src/IdentityServerHost) | 5001 | The authorization server. The mini-IdG proper. |
 | [ExternalIdp](../../src/ExternalIdp) | 5011 | A *second*, independent Duende server. Stands in for a partner's IdP. Knows nothing about tenants. |
 | [MvcClient](../../src/MvcClient) | 5006 | Server-side confidential client. Stands in for `Applications.Apply`. |
-| [AgentPortal](../../src/AgentPortal) | 5016 | Phase 17's second server-side confidential client, its own registration (`agentportal`) on the same IdentityServerHost. Illustrative — not a port of a specific real app — of "more than one MVC/BFF client hits the same IdG," as `Applications.Portal`/`Applications.AdminConsole`/`Applications.CustomerPortal` do alongside `Applications.Apply` in production. Phase 17 was login-only; Phase 18 added tenant resolution (`Mini.Infrastructure`'s shared `ITenantContext`) and a real call to Mini.AuthorizationService for its own `"agent-portal"` resource. |
+| [AgentPortal](../../src/AgentPortal) | 5016 | Phase 17's second server-side confidential client, its own registration (`agentportal`) on the same IdentityServerHost. Illustrative — not a port of a specific real app — of "more than one MVC/BFF client hits the same IdG," as `Applications.Portal`/`Applications.AdminConsole`/`Applications.CustomerPortal` do alongside `Applications.Apply` in production. Phase 17 was login-only; Phase 18 added tenant resolution (`Mini.Infrastructure`'s shared `ITenantContext`) and a real call to Mini.AuthorizationService for its own `"agent-portal"` resource. Phase 22 gave it its own database (`AgentPortalDb`) and a `Policy/Edit` page that reads and writes that same resource's `Condition` for the caller's own tenant via Mini.AuthorizationService's Phase 21 admin API. |
 | [SampleApi](../../src/SampleApi) | 5007 | JWT-bearer-protected API. Carries `Services.Authorization`'s identity conventions. |
 | [ReactSpa](../../src/ReactSpa) | 5173 | Browser public client. No secret, PKCE only. |
 | [Mini.UserService](../../src/Mini.UserService) | 5013 | Stands in for two sibling DIT services (Tenant Management, User). Own database, own management API, and since Phase 12 the connector machinery that decides where a tenant's users come from. |
@@ -234,6 +249,7 @@ merge them; the full comparison table is in
 | `CascadingConnectorDbContext` | LocalDB **`MiniUsers`** | the eight connector tables (Phase 12) — catalog, choice, settings |
 | `AcmeUsers` | memory | Acme's own employee directory, in `Mini.AcmeApi/Program.cs`. Not this repo's data at all — a `Dictionary` because it stands in for a system we don't own. |
 | `AuthorizationDbContext` | LocalDB **`MiniAuthorization`** | per-tenant `Policies` (Phase 13), and since Phase 15 `CachedDecisions` — one row per (tenant, caller, resource, context), with a TTL. |
+| `AgentPortalDbContext` | LocalDB **`AgentPortalDb`** | `PolicyChangeRequests` (Phase 22) — an audit trail of policy-edit attempts made through AgentPortal's UI; never the policy itself, which stays in `AuthorizationDbContext` above. AgentPortal's first database. |
 
 IdentityServerHost's three contexts share one database; `Mini.UserService`'s two share a
 **separate** one — `MiniUsers`, added in Phase 11, with the connector tables joining it in

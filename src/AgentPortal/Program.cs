@@ -1,5 +1,8 @@
+using AgentPortal.Data;
+using AgentPortal.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Mini.Infrastructure.ExternalServices;
 using Mini.Infrastructure.Http;
@@ -9,6 +12,14 @@ using Mini.Infrastructure.MultiTenant;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
+
+// Phase 22: Agent Portal's first database — an audit trail, not a copy of Mini.AuthorizationService's
+// own Policy rows (see Data/AgentPortalDbContext.cs's header comment). Same
+// AddDbContext<TContext>(UseSqlServer(...)) shape every other LocalDB-backed project in this repo uses
+// (Mini.AuthorizationService's Program.cs is the closest example).
+builder.Services.AddDbContext<AgentPortalDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("AgentPortalDb"),
+        b => b.MigrationsAssembly("AgentPortal")));
 
 // Phase 18: gives this skeleton a reason to exist — tenant resolution plus a real downstream call.
 // ITenantContext/TenantContext/TenantResolutionMiddleware are Mini.Infrastructure's Phase-18 extraction
@@ -36,6 +47,27 @@ builder.Services.AddHttpClient<IAuthorizationClient, AuthorizationClient>((servi
            var externalServices = services.GetRequiredService<IOptions<ExternalServicesConfiguration>>().Value;
            var serviceDefinition = externalServices.GetServiceDefinition("AuthorizationService");
            client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
+       })
+       .AddPolicyHandler(ResiliencePolicies.Retry())
+       .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
+
+// Phase 22: a second, small typed client at the SAME base address (Mini.AuthorizationService, :5015)
+// as IAuthorizationClient above — see Services/PolicyAdminClient.cs's header comment for why this one
+// stays local to AgentPortal instead of moving into Mini.Infrastructure alongside IAuthorizationClient.
+builder.Services.AddHttpClient<IPolicyAdminClient, PolicyAdminClient>((services, client) =>
+       {
+           var externalServices = services.GetRequiredService<IOptions<ExternalServicesConfiguration>>().Value;
+           var serviceDefinition = externalServices.GetServiceDefinition("AuthorizationService");
+           client.BaseAddress = new Uri(serviceDefinition.GetFullPath());
+           // Phase 22 "Things that broke": Mini.AuthorizationService's PUT endpoint (Phase 21) awaits
+           // IPublishEndpoint.Publish before responding, and MassTransit's RabbitMQ transport has no
+           // publish timeout of its own — with the broker unreachable, that await never completes, so
+           // the default HttpClient.Timeout (100s) was the only thing that ever ended the request, and
+           // it did so as an unhandled-looking TaskCanceledException. An explicit, shorter timeout here
+           // turns a broker outage into a fast, RECORDED "Failed" PolicyChangeRequest row (see
+           // PolicyAdminClient's catch block) instead of a hung request — the whole point of having an
+           // Outcome field at all. See README.md's Phase 22 section for how this was found.
+           client.Timeout = TimeSpan.FromSeconds(15);
        })
        .AddPolicyHandler(ResiliencePolicies.Retry())
        .AddPolicyHandler(ResiliencePolicies.CircuitBreaker());
@@ -101,6 +133,15 @@ builder.Services.AddAuthentication(options =>
        });
 
 var app = builder.Build();
+
+// Same placement Mini.AuthorizationService's Program.cs uses for its own DbContext: migrate
+// immediately after Build(), before the request pipeline is wired up, so a missing/behind database
+// fails fast at startup rather than on this app's first policy-edit request.
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AgentPortalDbContext>();
+    db.Database.Migrate();
+}
 
 app.UseStaticFiles();
 app.UseRouting();

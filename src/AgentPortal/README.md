@@ -19,6 +19,10 @@
 16. Shared authorization client (extracted into Mini.Infrastructure, made resilient) ✓
 17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
 18. Agent Portal calls Mini.AuthorizationService via the shared client ✓
+19. Message bus (MassTransit/RabbitMQ port into Mini.Infrastructure) ✓
+20. Mini.MessageCenter (webhook fan-out) ✓
+21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
+22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ✓
 ```
 
 ## Why this phase
@@ -427,3 +431,219 @@ Prefer not to click through a browser? [`test-phase18.ps1`](../../test-phase18.p
 the whole thing over raw HTTP: AgentPortal login still works (regression), a real `authorized: true`
 decision for both `alice`/acme and `bob`/globex against the SAME `"agent-portal"` resource, and an
 anonymous request never reaching the authorization result at all.
+
+## Phase 22 — a database of its own, and a real policy-edit UI
+
+### Why this phase
+
+Every phase since 17 gave AgentPortal one more thing to *ask* — a tenant, an authorization decision —
+but nothing to *own*. Phase 22 changes that: AgentPortal gets its first database, and a reason for it
+that isn't a copy of somebody else's data. The reason is an audit trail (`PolicyChangeRequest` — see
+`CONTEXT.md`), not a staging area or an approval workflow: a signed-in agent can view and change the
+`"agent-portal"` policy's `Condition` for their own tenant, and every attempt — successful or not — gets
+logged locally. The canonical `Policy` row this all revolves around never moves; it stays exactly where
+Phase 13 put it, in `Mini.AuthorizationService`'s own `AuthorizationDbContext`.
+
+**Scope decision, stated explicitly (this phase's Q7):** the new `PolicyController` only ever
+reads/writes ONE resource, `"agent-portal"` — the same one `HomeController.CheckAuthorization()`
+already evaluates against (Phase 18) — scoped to whatever tenant `ITenantContext` resolves for the
+signed-in user. It deliberately does NOT expose a resource picker or a tenant picker. Two reasons: first,
+`"agent-portal"` is still the only resource this app has ever had an opinion about — letting an agent
+edit `"sample-api"`'s policy from here would be a second, unrelated feature Phase 22 wasn't asked to
+build. Second, and more important: keeping the tenant fixed to `ITenantContext.Tenant.Key` (never a
+value the user types) is what keeps THIS controller from ever triggering Phase 21's documented,
+unfixed gap — the admin endpoint never checks that the caller's own tenant matches the route's
+`{tenantKey}`. Nothing added in this phase closes that gap; it's now reachable from a real UI for the
+first time, which is the point of naming it here rather than only in a script.
+
+### New: `Data/AgentPortalDbContext.cs`
+
+```csharp
+public class AgentPortalDbContext(DbContextOptions<AgentPortalDbContext> options) : DbContext(options)
+{
+    public DbSet<PolicyChangeRequest> PolicyChangeRequests => Set<PolicyChangeRequest>();
+}
+
+public class PolicyChangeRequest
+{
+    public Guid Id { get; set; }
+    public required string AgentSubjectId { get; set; }   // the signed-in agent's "sub" claim
+    public required string TenantKey { get; set; }
+    public required string ResourceName { get; set; }
+    public string? OldCondition { get; set; }              // null if no policy existed yet
+    public required string NewCondition { get; set; }
+    public DateTime RequestedAtUtc { get; set; }
+    public required string Outcome { get; set; }            // "Succeeded" or "Failed"
+    public string? FailureDetail { get; set; }
+}
+```
+
+Same `AddDbContext<TContext>(UseSqlServer(...))` + `db.Database.Migrate()` shape every other LocalDB-
+backed project in this repo uses — `Mini.AuthorizationService/Program.cs` was the closest template.
+New database, `AgentPortalDb`, migrated with its own `AgentPortal` migrations assembly — no other
+process in this repo has a connection string for it, same "database per service" enforcement-by-
+absent-credential `CONTEXT.md`'s `MiniUsers` entry already describes.
+
+### New: `Services/PolicyAdminClient.cs` — a SECOND, small typed client, deliberately not shared
+
+```csharp
+public interface IPolicyAdminClient
+{
+    Task<PolicyDto?> GetPolicyAsync(string resourceName, string bearerToken);
+    Task<PolicyUpdateOutcome> UpdatePolicyAsync(string tenantKey, string resourceName, string condition, string bearerToken);
+}
+```
+
+This sits alongside `Mini.Infrastructure`'s shared `IAuthorizationClient` (Phase 16), pointed at the
+same base address (`:5015`), but it is NOT added to `Mini.Infrastructure`. `IAuthorizationClient` is a
+genuinely shared concern — SampleApi and AgentPortal both ask "am I authorized," which is exactly why
+Phase 16 extracted it. Reading/writing a `Policy` row's `Condition` has exactly ONE caller in this repo
+so far — this controller — so per this repo's own "shared concerns go in `Mini.Infrastructure`" rule
+(port need-driven, never ahead of a second real consumer), it stays local until a second consumer
+actually shows up.
+
+`GetPolicyAsync` calls `Mini.AuthorizationService`'s existing `GET /api/v1/authorization/policies` —
+widened in this same phase (see that project's own Phase 22 section) to include `Condition` in its
+projection, which nothing had ever needed to read back before now. `UpdatePolicyAsync` calls Phase 21's
+`PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}`, forwarding the caller's own bearer
+token — never a service-account token, per this phase's design decision #3 (the audit trail records who,
+the human, changed it).
+
+### New: `Controllers/PolicyController.cs`
+
+```csharp
+[Authorize]
+[RequireTenant]
+public class PolicyController(IPolicyAdminClient policyAdminClient, ITenantContext tenantContext, AgentPortalDbContext db) : Controller
+{
+    private const string ResourceName = "agent-portal";
+
+    public async Task<IActionResult> Edit() { /* GET current Condition, forwarding the user's token */ }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> Edit(string newCondition)
+    {
+        var before = await policyAdminClient.GetPolicyAsync(ResourceName, accessToken);
+        var outcome = await policyAdminClient.UpdatePolicyAsync(tenant.Key, ResourceName, newCondition, accessToken);
+        db.PolicyChangeRequests.Add(new PolicyChangeRequest { /* ..., Outcome = outcome.Success ? "Succeeded" : "Failed" */ });
+        await db.SaveChangesAsync();
+        // ...
+    }
+
+    public async Task<IActionResult> History() { /* every PolicyChangeRequest for the caller's own tenant */ }
+}
+```
+
+`[Authorize] [RequireTenant]` is the same pairing `HomeController.Secure()`/`CheckAuthorization()`
+already use — the shared `RequireTenantAttribute` `Mini.Infrastructure/MultiTenant` has carried since
+Phase 18, unmodified. The POST action records a `PolicyChangeRequest` **either way** — a failed call to
+Mini.AuthorizationService is exactly the kind of thing an audit trail exists to show, not something to
+leave unlogged (design decision #1 in the phase brief, resolved: log both, not only successes).
+
+### `Mini.AuthorizationService`'s one-line change
+
+```csharp
+// before: .Select(p => new { p.Id, p.Name, p.ResourceName, p.Description, p.IsEnabled, p.Order })
+.Select(p => new { p.Id, p.Name, p.ResourceName, p.Description, p.IsEnabled, p.Order, p.Condition })
+```
+
+The prompt for this phase asked to prefer reusing what's there over adding a near-duplicate endpoint.
+`GET /api/v1/authorization/policies` already existed and already scoped to the caller's own
+`identity.TenantKey` — exactly what the edit page needs — it just never projected `Condition`, because
+no caller before this phase ever needed to read it back. Widening the existing projection was the
+smaller, more honest change.
+
+### `IdentityServerConfig.json` — checked, not changed
+
+The `agentportal` client already requests `api1` (added in Phase 18, so `CheckAuthorization()` would
+have a token Mini.AuthorizationService accepts). Mini.AuthorizationService's JWT Bearer handler accepts
+both `authapi` and `api1` audiences (Phase 15) with no additional policy on the PUT endpoint beyond
+`RequireAuthorization()` (Phase 21 made that gap deliberate — see that project's README). So the SAME
+token AgentPortal already had was already sufficient to call the admin endpoint. Verified by reading
+both configs side by side before writing any code, not assumed — no client/scope change was needed.
+
+## Comparison against the real counterparts (Phase 22 additions)
+
+| This sample | Real counterpart | Notes |
+| --- | --- | --- |
+| Agent editing a policy's `Condition` through a small local admin UI | Not confirmed against a specific real Apply/Services.Authorization admin screen — the same honesty gap Phase 18's own comparison table already recorded for `CheckAuthorization()`. The general *shape* (an operator-facing app calling an authorization service's own admin API with their own forwarded token) is plausible but not verified against a real call site in the material reachable in this environment (`C:\work\Applications.IdentityGateway\docs`). | Said plainly rather than guessed — see Phase 18's identical caveat. |
+| `PolicyChangeRequest` as an audit trail, in the CALLING app's own database | The real management APIs publish `CREATE_TENANT`/`DELETE_TENANT` audit events via `AddAudit()` (see `docs/architecture/service-to-service-auth.md`'s "Where this sample simplifies") — a shared, centralized audit mechanism, not a database each caller keeps for itself. | A deliberate simplification, not a port: this sample has no shared audit service to write to, so each database-owning project logs its own attempts locally. Named here so it isn't mistaken for a faithful port of `AddAudit()`. |
+
+## Where this sample simplifies
+
+| Real IdG / Apply | This sample (Phase 22) |
+| --- | --- |
+| A real admin surface editing a `Policy`-shaped concept would almost certainly validate the new value's shape (a real JSON schema for `Condition`, valid role names, etc.) before writing it. | The edit form accepts any string and forwards it verbatim — Mini.AuthorizationService's own `Policy.EvaluatePolicy` already tolerates malformed `Condition` JSON by returning `false` (a `try/catch` that swallows parse errors, see `AuthorizationDbContext.cs`), so a bad edit fails closed rather than crashing anything, but nothing tells the agent their JSON was invalid before they submit it. |
+| A real audit trail would very likely be centralized (one audit service every write-capable app publishes to), not scattered one-per-app. | `PolicyChangeRequest` lives only in `AgentPortalDb` — see the comparison table above. |
+| A production caller editing another service's policy would likely go through a role/permission gate distinct from "is this any signed-in user." | Unchanged from Phase 21's decision #2: editing stays open to any authenticated AgentPortal user, on purpose, to keep exercising the same documented gap rather than quietly adding a role check this phase wasn't asked to build. |
+
+## Things that broke, and why they're worth knowing
+
+**1. Mini.AuthorizationService's admin endpoint hangs — not just "eventually fails" — when RabbitMQ is
+unreachable, and it hangs long enough to matter.** The first version of `test-phase22.ps1` submitted an
+edit and got a raw `HttpClient.Timeout` exception at the framework default of 100 seconds. Looking at
+`Mini.AuthorizationService`'s own log made the cause obvious: `PUT /api/v1/authorization/policies/...`
+calls `await publishEndpoint.Publish(...)` (Phase 21), and MassTransit's RabbitMQ transport has no
+publish timeout of its own — with no broker reachable, that `await` never completes; it just logs
+`Retrying 00:00:30: Broker unreachable` forever. Phase 19-21's own testing already knew RabbitMQ was
+needed for the FAN-OUT to be provable; this phase found that without it, the WRITE'S OWN HTTP CALL
+never returns either — a materially bigger gap than "the webhook doesn't fire." **The fix, in
+`AgentPortal/Program.cs`:** give `IPolicyAdminClient`'s `HttpClient` an explicit 15-second timeout
+instead of trusting the 100-second default, so a broker outage degrades to a fast, RECORDED `"Failed"`
+`PolicyChangeRequest` row — the entire reason the `Outcome` field exists — instead of hanging the whole
+request indefinitely.
+
+**2. That fix exposed a second, more interesting bug: the write can succeed even when the call reports
+"Failed."** `Mini.AuthorizationService`'s PUT handler calls `db.SaveChanges()` (the real, durable write
+to the `Policy` row) BEFORE it awaits `publishEndpoint.Publish(...)`. So when AgentPortal's client times
+out waiting for the response, the server-side request keeps running in the background — the `Policy` row
+had already been updated before the hang even started. Confirmed directly: after a "Failed" run of
+`test-phase22.ps1` (no RabbitMQ), a direct `sqlcmd` query against `MiniAuthorization.Policies` showed
+the row already carrying the new, "failed" edit's own marker. **This is a real, load-bearing limitation
+of the audit trail, documented rather than silently fixed** (see `CONTEXT.md`'s `PolicyChangeRequest`
+entry) — fixing it properly means changing Mini.AuthorizationService's own response ordering (publish
+before responding, or move the publish to a true fire-and-forget/outbox), which is Phase 21's design
+and out of this phase's scope to rewrite. `PolicyChangeRequest.Outcome` should be read as "did
+AgentPortal's own HTTP call succeed," never as "did the write happen" — those turned out NOT to be the
+same question.
+
+## What's deliberately missing (as of Phase 22)
+
+- **Any validation of `Condition`'s shape before submitting it.** See "Where this sample simplifies."
+- **A role/permission gate on who can edit a policy.** Unchanged, deliberate, per Phase 21's decision #2.
+- **Any UI for a resource other than `"agent-portal"`, or a tenant other than the caller's own.** See
+  the "scope decision" above — narrow on purpose, to avoid both scope creep and accidentally building
+  the very cross-tenant surface Phase 21's unfixed gap would need to become dangerous.
+- **A fix for Phase 21's tenant-match gap.** Still open. This phase makes it reachable from a browser-
+  driven UI for the first time (see "Why this phase") without closing it — that's Phase 23's kind of
+  work, if it ever becomes one, not this one's.
+- **A fix for the publish-before-respond ordering bug** found in "Things that broke" #2. Documented, not
+  patched — patching Mini.AuthorizationService's own endpoint ordering is out of scope for a phase whose
+  subject is AgentPortal.
+
+## Try it yourself
+
+Start everything with `.\run-all.ps1` (needs Docker for RabbitMQ; without it, every host still starts
+and answers `/health` — only the live bus path is unavailable, same as Phases 19-21), then:
+
+1. Browse to `https://localhost:5016`, sign in as `alice`/`alice` (Acme, `Admin`), and from the secure
+   page click **Edit "agent-portal" policy for my tenant**. You'll see the current `Condition` — the
+   same JSON `Mini.AuthorizationService`'s `SeedData` wrote in Phase 18.
+2. Change it — e.g. tighten `requiredRoles` to `["SuperAdmin"]` — and submit. If RabbitMQ is running,
+   you land on the audit history page showing a `Succeeded` row; without it, expect a graceful
+   `"Update failed"` message after about 15 seconds, and a `Failed` row on the SAME history page (see
+   "Things that broke" #2 for why the underlying policy may have changed anyway).
+3. Re-run `Home/CheckAuthorization` afterward as `alice` — if you tightened the role, she's no longer
+   `Admin` enough for her own edited policy (unless you happened to change it to something she still
+   satisfies), a very literal demonstration of "an agent can accidentally lock themselves out."
+4. Break the tenant-match gap on purpose (carefully — this is Phase 21's documented, unfixed gap, not a
+   Phase 22 feature): call `PUT https://localhost:5015/api/v1/authorization/policies/globex/agent-portal`
+   directly with alice's (acme's) own access token instead of going through this UI. It succeeds — proof
+   that nothing server-side stops an acme-tenant token from editing globex's policy, which is exactly
+   what CONTEXT.md's `PolicyChangeRequest` entry and this README's "Why this phase" section describe.
+
+Prefer not to click through a browser? [`test-phase22.ps1`](../../test-phase22.ps1) (repo root) drives
+the whole thing over raw HTTP: AgentPortal login (regression), the edit page showing the current
+condition, a submitted edit recorded in `AgentPortalDb` either way, and the audit history page
+rendering it — adapting its assertions to whether RabbitMQ is actually reachable in your environment.

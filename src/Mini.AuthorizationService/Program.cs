@@ -128,7 +128,14 @@ api.MapGet("/policies", (AuthorizationDbContext db, IIdentityContext identity) =
 {
     var policies = db.Policies
         .Where(p => p.TenantKey == identity.TenantKey)
-        .Select(p => new { p.Id, p.Name, p.ResourceName, p.Description, p.IsEnabled, p.Order })
+        // Phase 22: Condition joined the projection. Nothing needed it through Phase 21 — every
+        // existing caller (test-phase13.ps1 through test-phase21.ps1) only ever asked "does a policy
+        // for this resource exist," never "what does it currently say." AgentPortal's new policy-edit
+        // page (PolicyController.Edit) is the first caller that needs to show the CURRENT Condition
+        // before letting an agent replace it, so this is the "add a minimal GET if genuinely missing"
+        // case the prompt called for — done by widening the existing endpoint's shape rather than
+        // adding a near-duplicate one.
+        .Select(p => new { p.Id, p.Name, p.ResourceName, p.Description, p.IsEnabled, p.Order, p.Condition })
         .ToList();
 
     return Results.Ok(policies);

@@ -451,6 +451,18 @@ Phase 18 gave it a reason to exist: tenant resolution via `Mini.Infrastructure`'
 own (`"agent-portal"`, distinct from SampleApi's `"sample-api"`) through the same shared
 `AuthorizationClient` Phase 16 extracted. `IIdentityContext` (see below) needed no change to serve a
 browser-based caller — it was already claims-only, never assuming a bearer token specifically.
+
+**Phase 22 gave it its own database** — `AgentPortalDb`, the first LocalDB database this project owns —
+and a real feature surface: a `PolicyController` where a signed-in agent can view and edit the
+`"agent-portal"` policy's `Condition` for their OWN resolved tenant only (never an arbitrary tenant or
+resource — see `src/AgentPortal/README.md`'s Phase 22 "scope decision" for why that stayed narrow), then
+logs the attempt as a `PolicyChangeRequest` (see that entry). It calls Mini.AuthorizationService's Phase
+21 admin endpoint with the signed-in user's own forwarded access token — no new client registration, no
+new scope, since the `agentportal` client already requested `api1` in Phase 18. This is also the first
+phase to make Phase 21's documented, unfixed tenant-match gap (the PUT endpoint never checks the
+caller's tenant against the route's `{tenantKey}`) reachable from a real UI, not just a raw HTTP script
+— this controller always sends the caller's own resolved tenant key, so it never triggers the gap
+itself, but nothing in the path defends against a caller that would.
 _Avoid_: assuming "Agent Portal" names a real Equisoft product — it doesn't.
 
 **Message bus**:
@@ -542,13 +554,29 @@ Phase 20's minimal testing aid (`:5018`), in the same spirit as `ExternalService
 only receiver in this phase that actually checks a signature (`Mini.AcmeApi`'s webhook endpoint
 does not; see its README's Phase 20 addition for why that's a documented gap, not an oversight).
 
-**PolicyChangeRequest** (planned):
-An audit-trail row in Agent Portal's own new database: who (the signed-in agent's `sub`) changed
-which policy, the before/after `Condition`, and when. Exists so Agent Portal has a genuine reason
-to own a database, without duplicating who owns the `Policy` concept itself — the canonical row
-stays in `Mini.AuthorizationService`; this is a log of *that a change happened*, not a second copy
-of the policy.
-_Avoid_: treating this as the source of truth for a policy's current state — it never is.
+**PolicyChangeRequest**:
+Phase 22's audit-trail row (`AgentPortal/Data/AgentPortalDbContext.cs`), in Agent Portal's own new
+`AgentPortalDb` database: who (the signed-in agent's `sub`, as `AgentSubjectId`) changed which
+`(TenantKey, ResourceName)` policy, the before/after `Condition`, when (`RequestedAtUtc`), and an
+`Outcome` (`"Succeeded"`/`"Failed"`, with `FailureDetail` set only on failure). Exists so Agent Portal
+has a genuine reason to own a database, without duplicating who owns the `Policy` concept itself — the
+canonical row stays in `Mini.AuthorizationService`; this is a log of *that a change was attempted*, not
+a second copy of the policy. Written by `PolicyController.Edit()` (POST) either way — a failed call to
+`Mini.AuthorizationService` is exactly the kind of thing an audit trail should show, not something to
+leave unlogged.
+
+**Known, load-bearing gap, found by actually running this**: the row's `Outcome` reflects whether
+*AgentPortal's own HTTP call* succeeded, not whether the write actually landed. Mini.AuthorizationService's
+PUT endpoint (Phase 21) calls `db.SaveChanges()` (the real write) BEFORE `await
+publishEndpoint.Publish(...)` — so with no reachable message broker, the write can complete on the
+server while the client-side `HttpClient` call still times out (see AgentPortal's `Program.cs` Phase 22
+comment on why that timeout is now an explicit 15s instead of the framework default 100s). A
+`PolicyChangeRequest` row can therefore say `"Failed"` for a change that, underneath, actually
+succeeded. Reproduced without RabbitMQ running: see `src/AgentPortal/README.md`'s Phase 22 "Things
+that broke" section for the exact sequence. Not fixed in Phase 22 — fixing it would mean changing
+Mini.AuthorizationService's own response ordering (Phase 21's design), which is out of this phase's scope.
+_Avoid_: treating this as the source of truth for a policy's current state — it never is. And don't
+read a `"Failed"` row as proof the write didn't happen — see the gap above.
 
 **CachedDecision**:
 Phase 15's persisted authorization-decision cache — a row in `AuthorizationDbContext`, keyed by

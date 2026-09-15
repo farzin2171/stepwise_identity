@@ -33,7 +33,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 19. Message bus (MassTransit/RabbitMQ port into Mini.Infrastructure) ✓
 20. Mini.MessageCenter (webhook fan-out) ✓
 21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
-22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ← next
+22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ✓
+23. End-to-end wiring / final regression across the whole messaging arc ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -45,7 +46,11 @@ A mini Identity Gateway, built from scratch in phases that mirror
   IdentityServerHost `MvcClient` logs into. Phase 17 was a skeleton — login only. Phase 18
   gives it a reason to exist: tenant resolution (via `Mini.Infrastructure`'s newly-shared
   `ITenantContext`) and a real downstream call to `Mini.AuthorizationService` through the
-  same `AuthorizationClient` SampleApi already uses. See its
+  same `AuthorizationClient` SampleApi already uses. Phase 22 gave it its own database — an
+  `AgentPortalDb` holding a `PolicyChangeRequest` audit trail — and a real feature: a
+  `Policy/Edit` page where a signed-in agent can view and change the `"agent-portal"` policy's
+  `Condition` for their own tenant, calling Mini.AuthorizationService's Phase 21 admin API with
+  their own forwarded access token and logging the attempt either way. See its
   [README](src/AgentPortal/README.md).
 - [src/ReactSpa](src/ReactSpa) — a browser-based (public) SPA that logs in against the
   same server with a different client configuration, because it can't keep a secret.
@@ -77,7 +82,9 @@ A mini Identity Gateway, built from scratch in phases that mirror
   (`PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}`) that upserts a `Policy` row,
   invalidates the cached decisions that depended on it, and publishes a real `PolicyChangedEvent` —
   making it the first real publisher onto Phase 19's bus, and Phase 20's consumer a real end-to-end
-  path instead of only reachable through a diagnostic endpoint. See its
+  path instead of only reachable through a diagnostic endpoint. Phase 22 gave it its first real UI
+  caller (AgentPortal) and widened `GET /api/v1/authorization/policies`'s projection to include
+  `Condition`, which nothing had needed to read back until now. See its
   [README](src/Mini.AuthorizationService/README.md).
 - [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's hardcoded-dictionary
   version of the same thing, **superseded** in Phase 11 and kept for comparison, not deleted:
@@ -127,7 +134,11 @@ silently absorbs a broken integration and quietly downgrades a `role` claim whil
 subscriber path: HMAC signing, retry, and the same tenant-scoping lesson `connectors.md` already
 teaches, applied to outbound delivery instead of inbound lookup. Phase 21 updated that same doc now
 that a real publisher exists: `Mini.AuthorizationService`'s policy-admin API is the trigger, not a
-diagnostic endpoint.
+diagnostic endpoint. Phase 22 updated
+[docs/architecture/README.md](docs/architecture/README.md) itself: a new `AgentPortalDb` database in
+the state table, AgentPortal as a second real caller of the policy-admin endpoint (forwarding the
+signed-in user's own token, same as its existing `agent-portal` authorization check), and a note that
+Phase 21's documented tenant-match gap is now reachable from a real UI, not just a raw HTTP script.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -299,6 +310,20 @@ Verification scripts (repo root):
   endpoint. **Needs a real RabbitMQ** (Phase 19's dependency); if `docker info` fails in your
   environment, this script can't run — see `src/Mini.AuthorizationService/README.md`'s Phase 21
   section for what was verified without it.
+- [`test-phase22.ps1`](test-phase22.ps1) — proves AgentPortal's new database and policy-edit UI, in
+  nine parts: AgentPortal login still works (regression); the edit page loads and shows the current
+  `agent-portal` condition for acme (Mini.AuthorizationService's `/policies` endpoint widened to return
+  `Condition`, see that project's Phase 22 section); an edit submission is recorded as a
+  `PolicyChangeRequest` in AgentPortal's own `AgentPortalDb`, verified directly against LocalDB; and the
+  audit history page renders it. **Adapts to whether Docker/RabbitMQ is reachable**: with it, the full
+  success path runs (the edit really changes Mini.AuthorizationService's policy, verified independently
+  with a service-account token, and the row is recorded `Succeeded`); without it (as in this
+  environment), the script instead proves AgentPortal's new 15-second `HttpClient` timeout turns Phase
+  21's admin endpoint hanging on an unreachable broker into a fast, `Failed` audit row instead of an
+  indefinite hang — see `src/AgentPortal/README.md`'s Phase 22 "Things that broke" for the underlying
+  finding (the write can actually still succeed server-side even when the client sees `Failed` — a real,
+  documented gap, not fixed in this phase). Either way, the live bus → Mini.MessageCenter → webhook path
+  needs a human with Docker Desktop to additionally confirm, same as Phases 19-21.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

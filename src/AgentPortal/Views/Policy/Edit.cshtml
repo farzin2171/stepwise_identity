@@ -1,0 +1,33 @@
+@model AgentPortal.Controllers.PolicyEditViewModel
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>Agent Portal — Edit Policy</title></head>
+<body style="font-family: sans-serif; max-width: 640px; margin: 4rem auto;">
+  <h2>Edit policy: "@Model.ResourceName" for @Model.TenantKey</h2>
+  <p>
+    This reads and writes the <code>Condition</code> of your own tenant's <code>Policy</code> row
+    in <code>Mini.AuthorizationService</code> — the same row
+    <a href="/Home/CheckAuthorization">Check authorization for "agent-portal"</a> is evaluated against.
+    The canonical policy stays there; this app only logs that you changed it (see
+    <a href="/Policy/History">audit history</a>).
+  </p>
+  @if (Model.Error is not null)
+  {
+    <p style="color: #a00; font-weight: bold;">@Model.Error</p>
+  }
+  <p><strong>Current condition</strong> (from <code>GET /api/v1/authorization/policies</code>):</p>
+  <pre style="background: #eee; padding: 1rem;">@(Model.CurrentCondition ?? "(no policy exists yet for this tenant/resource)")</pre>
+  <form method="post" action="/Policy/Edit">
+    @Html.AntiForgeryToken()
+    <label for="newCondition"><strong>New condition</strong> (JSON, e.g. <code>{"requiredRoles": ["Admin"]}</code>):</label><br />
+    <textarea id="newCondition" name="newCondition" rows="4" style="width: 100%; font-family: monospace;">@(Model.CurrentCondition)</textarea>
+    <p>
+      <button type="submit" style="padding: 0.5rem 1rem; background: #145; color: #fff; border: none; border-radius: 4px;">
+        Save (calls Mini.AuthorizationService)
+      </button>
+    </p>
+  </form>
+  <p><a href="/Policy/History">View audit history</a> &middot; <a href="/Home/Secure">Back to the secure page</a></p>
+</body>
+</html>

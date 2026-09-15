@@ -1,0 +1,54 @@
+@model IEnumerable<AgentPortal.Data.PolicyChangeRequest>
+@{ Layout = null; }
+<!DOCTYPE html>
+<html>
+<head><title>Agent Portal — Policy Change History</title></head>
+<body style="font-family: sans-serif; max-width: 900px; margin: 4rem auto;">
+  <h2>Policy change history — your tenant</h2>
+  <p>
+    Rows from Agent Portal's own <code>AgentPortalDb</code> database (<code>PolicyChangeRequests</code>
+    table) — an audit trail of attempts made through this app's <a href="/Policy/Edit">policy-edit page</a>.
+    This is a log that a change was attempted here, never the source of truth for the policy's current
+    state — that's always <code>Mini.AuthorizationService</code>'s own <code>Policy</code> row.
+  </p>
+  @if (!Model.Any())
+  {
+    <p><em>No policy changes recorded yet for this tenant.</em></p>
+  }
+  else
+  {
+    <table border="1" cellpadding="6" style="border-collapse: collapse; width: 100%;">
+      <thead>
+        <tr>
+          <th align="left">When (UTC)</th>
+          <th align="left">Agent (sub)</th>
+          <th align="left">Resource</th>
+          <th align="left">Before</th>
+          <th align="left">After</th>
+          <th align="left">Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        @foreach (var row in Model)
+        {
+          <tr>
+            <td>@row.RequestedAtUtc.ToString("u")</td>
+            <td>@row.AgentSubjectId</td>
+            <td>@row.ResourceName</td>
+            <td><code>@(row.OldCondition ?? "(none)")</code></td>
+            <td><code>@row.NewCondition</code></td>
+            <td style="color: @(row.Outcome == "Succeeded" ? "#080" : "#a00");">
+              @row.Outcome
+              @if (row.FailureDetail is not null)
+              {
+                <div style="font-size: 0.85em; color: #a00;">@row.FailureDetail</div>
+              }
+            </td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+  <p><a href="/Policy/Edit">Back to edit</a> &middot; <a href="/Home/Secure">Back to the secure page</a></p>
+</body>
+</html>
