@@ -430,8 +430,12 @@ Each policy names a resource, describes who can access it (currently role-based;
 and in what order to check if multiple policies apply.
 
 Phase 13 adds the service itself and proves it works (`test-phase13.ps1`). Phase 14 wired it into
-SampleApi's `/authorize/{resourceName}` endpoint, called per-request rather than at login. See
-[`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
+SampleApi's `/authorize/{resourceName}` endpoint, called per-request rather than at login. **Phase 21
+made it a real publisher**: `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` upserts a
+`Policy` row's `Condition`, clears the `CachedDecisions` rows that depended on it, and publishes a real
+`PolicyChangedEvent` onto the bus — see `PolicyChangedEvent` below. Editing is open to any authenticated
+caller on purpose (no role gate), the same "two callers look identical" gap `IIdentityContext` already
+documents elsewhere. See [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
 
 **Agent Portal**:
 Phase 17's `src/AgentPortal` — a second server-side MVC client, imitating `Applications.Apply`, with
@@ -473,19 +477,24 @@ _Avoid_: assuming this is a from-scratch design — it's a port, unlike the webh
 don't assume the tenant filter or an event-helper wrapper exist yet — they don't, see above.
 
 **PolicyChangedEvent**:
-The domain event `Mini.AuthorizationService` will publish (starting Phase 21) on the message bus
-when a `Policy` row is edited (`TenantKey`, `ResourceName`, old/new `Condition`, `ChangedAtUtc`).
-Lives in `Mini.Infrastructure/Messaging/` as of Phase 19 — defined and proven to round-trip over both
+The domain event `Mini.AuthorizationService` publishes on the message bus when a `Policy` row is
+edited (`TenantKey`, `ResourceName`, old/new `Condition`, `ChangedAtUtc`). Lives in
+`Mini.Infrastructure/Messaging/` as of Phase 19 — defined and proven to round-trip over both
 MassTransit's in-memory test harness and a real RabbitMQ instance (`test-phase19.ps1`). As of Phase
-20, `Mini.MessageCenter` is a real, production consumer of it (`Messaging/PolicyChangedEventConsumer.cs`);
-`Mini.AuthorizationService`, the real publisher, still doesn't call `Publish` anywhere — that's
-Phase 21. The `PolicyChangedEventConsumer` in `tests/StepwiseIdentity.Tests` still exists too,
-unchanged, purely to prove the wire format works without needing a running service. Deliberately a
-named, domain-specific event rather than the real library's generic `EntityUpdatedEvent` envelope —
-chosen so `Mini.MessageCenter` doesn't need to know `EntityType == "Policy"` means something.
+20, `Mini.MessageCenter` is a real, production consumer of it (`Messaging/PolicyChangedEventConsumer.cs`).
+**As of Phase 21, `Mini.AuthorizationService` is a real, production publisher of it too** — its new
+`PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` admin endpoint calls
+`IPublishEndpoint.Publish` on every successful write, replacing Mini.MessageCenter's throwaway
+diagnostic endpoint (`POST /api/v1/test/publish-policy-changed`, removed in Phase 21 exactly as it
+said it would be) as the real trigger. The `PolicyChangedEventConsumer` in
+`tests/StepwiseIdentity.Tests` still exists too, unchanged, purely to prove the wire format works
+without needing a running service. Deliberately a named, domain-specific event rather than the real
+library's generic `EntityUpdatedEvent` envelope — chosen so `Mini.MessageCenter` doesn't need to know
+`EntityType == "Policy"` means something.
 _Avoid_: confusing with `CachedDecision`, which is an authorization *answer*, not a change
-notification. And don't read its Phase 19 existence as "policy changes are already wired to the
-bus" — nothing calls `Publish` outside a test yet.
+notification. And don't assume this is the only way a `Policy` row could ever change — nothing
+outside `Mini.AuthorizationService` writes to `Policies` directly (see `PolicyChangeRequest` below
+for why Phase 22's Agent Portal doesn't get to either).
 
 **Mini.MessageCenter**:
 Phase 20's service (`:5017`) that consumes `PolicyChangedEvent` off the real RabbitMQ bus and fans
@@ -503,13 +512,16 @@ webhook design is this course's own invention, not a port. See
 [`src/Mini.MessageCenter/README.md`](src/Mini.MessageCenter/README.md) and
 [`docs/architecture/webhooks.md`](docs/architecture/webhooks.md).
 
-**No real publisher exists yet, on purpose.** `Mini.AuthorizationService` doesn't publish
-`PolicyChangedEvent` until Phase 21 (its policy-admin API). Phase 20 proves the consumer and
-delivery path work via a throwaway diagnostic endpoint,
-`POST /api/v1/test/publish-policy-changed`, documented as removable once Phase 21 ships.
+**Its Phase 20 diagnostic endpoint is gone.** Through Phase 20, `Mini.AuthorizationService` didn't
+publish `PolicyChangedEvent` yet, so Phase 20 proved the consumer and delivery path with a throwaway
+endpoint, `POST /api/v1/test/publish-policy-changed`, documented as removable once Phase 21 shipped a
+real publisher. Phase 21 removed it — `Mini.AuthorizationService`'s policy-admin API is now the only
+thing that triggers a `PolicyChangedEvent`. `test-phase20.ps1` is kept (per this repo's
+never-delete-a-superseded-artifact rule) but can no longer run past the point where it called that
+endpoint; `test-phase21.ps1` exercises the real path instead.
 _Avoid_: calling it "a port of Services.MessageCenter" unqualified — only the *name* and the general
 shape ("a service downstream services notify") come from there; the webhook mechanism is new. And
-don't assume a real trigger exists yet — see the diagnostic-endpoint caveat above.
+don't assume the diagnostic endpoint still exists — see above.
 
 **Webhook subscription**:
 A seeded row in `Mini.MessageCenter`'s own database naming a receiver: callback URL, a shared HMAC

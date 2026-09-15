@@ -50,30 +50,14 @@ app.MapGet("/api/v1/deliveries", async (MessageCenterDbContext db) =>
     return Results.Ok(deliveries);
 });
 
-// THROWAWAY diagnostic endpoint, documented as such: Phase 21 is what actually publishes
-// PolicyChangedEvent from Mini.AuthorizationService when a Policy row changes. Until then, nothing in
-// production code calls Publish at all, so there is no real trigger to drive test-phase20.ps1 against
-// - this endpoint exists purely so the phase can prove the consumer + webhook-delivery path works,
-// the same way Phase 13's test harness proved Mini.AuthorizationService before Phase 14 wired a real
-// caller into it. Remove this endpoint once Phase 21 ships a real publisher.
-app.MapPost("/api/v1/test/publish-policy-changed", async (PublishTestEventRequest request, IPublishEndpoint publishEndpoint) =>
-{
-    var evt = new PolicyChangedEvent
-    {
-        TenantKey = request.TenantKey,
-        ResourceName = request.ResourceName ?? "sample-api",
-        OldCondition = request.OldCondition,
-        NewCondition = request.NewCondition ?? """{"requiredRoles": ["Admin"]}""",
-        ChangedAtUtc = DateTimeOffset.UtcNow
-    };
-
-    await publishEndpoint.Publish(evt);
-
-    return Results.Accepted(value: evt);
-});
+// Phase 21 removed the THROWAWAY diagnostic endpoint that used to live here
+// (POST /api/v1/test/publish-policy-changed), exactly as it said it would when Phase 20 added it:
+// Mini.AuthorizationService's new policy-admin API (PUT /api/v1/authorization/policies/{tenantKey}/{resourceName})
+// is now the real trigger that publishes PolicyChangedEvent. test-phase21.ps1 drives that real path;
+// test-phase20.ps1 is kept (this repo's convention is to keep superseded scripts, not delete them —
+// see CONTEXT.md's "superseded" pattern) but can no longer run past its diagnostic-publish step, since
+// the endpoint it called no longer exists. See docs/architecture/webhooks.md.
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
 
 app.Run();
-
-internal record PublishTestEventRequest(string TenantKey, string? ResourceName, string? OldCondition, string? NewCondition);

@@ -32,7 +32,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 18. Agent Portal calls Mini.AuthorizationService via the shared client ✓
 19. Message bus (MassTransit/RabbitMQ port into Mini.Infrastructure) ✓
 20. Mini.MessageCenter (webhook fan-out) ✓
-21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ← next
+21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
+22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -72,7 +73,12 @@ A mini Identity Gateway, built from scratch in phases that mirror
 - [src/Mini.AuthorizationService](src/Mini.AuthorizationService) — Phase 13's authorization decision
   service: where authorization policies live when they can't be embedded in a token (because they
   need to change without re-issuing tokens, or because they need runtime context). Called by SampleApi
-  to evaluate policies per tenant. See its [README](src/Mini.AuthorizationService/README.md).
+  to evaluate policies per tenant. Phase 21 gave it a policy-admin API
+  (`PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}`) that upserts a `Policy` row,
+  invalidates the cached decisions that depended on it, and publishes a real `PolicyChangedEvent` —
+  making it the first real publisher onto Phase 19's bus, and Phase 20's consumer a real end-to-end
+  path instead of only reachable through a diagnostic endpoint. See its
+  [README](src/Mini.AuthorizationService/README.md).
 - [src/ExternalServicesStub](src/ExternalServicesStub) — Phase 7's hardcoded-dictionary
   version of the same thing, **superseded** in Phase 11 and kept for comparison, not deleted:
   the value of a phase course is the diff between phases. `.\run-all.ps1 -IncludeStub` starts
@@ -92,7 +98,9 @@ A mini Identity Gateway, built from scratch in phases that mirror
   seeded webhook subscribers, HMAC-signing each delivery and retrying with Polly before giving
   up. Its own LocalDB database holds the subscriptions and a `DeliveryAttempt` log. No
   subscription-management API yet — see its [README](src/Mini.MessageCenter/README.md) for
-  what's a genuine port (none of it — see below) and what's this course's own invention.
+  what's a genuine port (none of it — see below) and what's this course's own invention. Phase 21
+  removed its throwaway diagnostic publish endpoint, exactly as documented when Phase 20 added it,
+  now that `Mini.AuthorizationService` is a real publisher.
 - [src/WebhookReceiverStub](src/WebhookReceiverStub) — Phase 20's minimal testing aid, in the
   `ExternalServicesStub` spirit: one `POST /webhook` endpoint that verifies the HMAC signature
   and logs the payload, plus `GET /webhook/received` for a test script to poll. Unscoped
@@ -117,7 +125,9 @@ that's decided by rows instead of code, including the finding that a cascading f
 silently absorbs a broken integration and quietly downgrades a `role` claim while doing it. Phase
 20 adds [webhooks.md](docs/architecture/webhooks.md), on the bus → Mini.MessageCenter → webhook-
 subscriber path: HMAC signing, retry, and the same tenant-scoping lesson `connectors.md` already
-teaches, applied to outbound delivery instead of inbound lookup.
+teaches, applied to outbound delivery instead of inbound lookup. Phase 21 updated that same doc now
+that a real publisher exists: `Mini.AuthorizationService`'s policy-admin API is the trigger, not a
+diagnostic endpoint.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -276,6 +286,19 @@ Verification scripts (repo root):
   tenant-scoped subscription never receives Globex's event. **Needs a real RabbitMQ** (Phase
   19's dependency); if `docker info` fails in your environment, this script can't run — the
   Phase 20 section of `src/Mini.MessageCenter/README.md` says what was verified without it.
+  **Superseded by Phase 21**: it can no longer run past its `/health` checks, since the diagnostic
+  endpoint it called to trigger delivery (`POST /api/v1/test/publish-policy-changed`) was removed
+  once a real publisher existed — kept per this repo's rule against deleting a superseded script.
+- [`test-phase21.ps1`](test-phase21.ps1) — proves the full arc works end to end for real: an
+  anonymous `PUT` to the new policy-admin endpoint is rejected with 401, but a plain authenticated
+  service-account token (no special role) is accepted; a primed decision cache entry is invalidated
+  immediately (not after the 30-second TTL) the moment the underlying policy changes; and the update
+  publishes a real `PolicyChangedEvent` that Mini.MessageCenter's Phase 20 consumer picks up off
+  RabbitMQ and fans out as a genuine, HMAC-signed webhook to `WebhookReceiverStub` — the first time
+  in this repo a webhook delivery was triggered by a real system change rather than a diagnostic
+  endpoint. **Needs a real RabbitMQ** (Phase 19's dependency); if `docker info` fails in your
+  environment, this script can't run — see `src/Mini.AuthorizationService/README.md`'s Phase 21
+  section for what was verified without it.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

@@ -9,7 +9,8 @@ scope matches the event.
 ...
 19. Message bus (MassTransit/RabbitMQ port into Mini.Infrastructure) ✓
 20. Mini.MessageCenter (webhook fan-out) ← this project
-21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent (next)
+21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
+22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI (next)
 ```
 
 ## Why this phase
@@ -102,30 +103,27 @@ dead-letter queue either — after retry is exhausted, the only record a deliver
 `DeliveryAttempt` row (`Success = false`, `Error` set). `GET /api/v1/deliveries` returns the last
 100, newest first, for a human or a test script to answer "did this land."
 
-## The Phase 21 gap, and how this phase proves itself anyway
+## Phase 21 closed the gap: the diagnostic endpoint is gone
 
-**Nothing in production code publishes `PolicyChangedEvent` yet.** That's Phase 21's job:
-`Mini.AuthorizationService` gains a policy-admin API and calls `Publish` when a `Policy` row
-changes. Until then, this service exposes a throwaway diagnostic endpoint:
+**Through Phase 20, nothing in production code published `PolicyChangedEvent`.** This service
+exposed a throwaway diagnostic endpoint, `POST /api/v1/test/publish-policy-changed`, purely so
+`test-phase20.ps1` had a real trigger — the same shape Phase 13 used to prove
+`Mini.AuthorizationService` worked before Phase 14 wired SampleApi into it as a real caller.
 
-```
-POST /api/v1/test/publish-policy-changed
-{ "tenantKey": "acme", "resourceName": "sample-api", "newCondition": "..." }
-→ 202 Accepted
-```
-
-purely so `test-phase20.ps1` has a real trigger — the same shape Phase 13 used to prove
-`Mini.AuthorizationService` worked before Phase 14 wired SampleApi into it as a real caller. This
-endpoint is meant to be deleted once Phase 21 ships a genuine publisher; it says so in
-`Program.cs` at the point it's registered.
+Phase 21 removed that endpoint exactly as it said it would, once `Mini.AuthorizationService` shipped
+a genuine one: `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` on that service now
+calls `Publish` on every successful write. `test-phase20.ps1` is kept (this repo never deletes a
+superseded artifact) but can no longer run past its `/health` checks — `test-phase21.ps1` exercises
+this consumer for real instead, triggered by an actual policy change rather than a diagnostic call.
 
 ## Endpoints
 
 ```
 GET  /health                                  -> 200, anonymous
 GET  /api/v1/deliveries                       -> last 100 DeliveryAttempt rows, newest first
-POST /api/v1/test/publish-policy-changed      -> THROWAWAY, see above; publishes to the real bus
 ```
+
+(`POST /api/v1/test/publish-policy-changed` existed through Phase 20 only — see above.)
 
 ## Auth on `/api/v1/deliveries`
 
@@ -145,7 +143,7 @@ later adds one, this endpoint should very likely move behind the same service-ac
 | Subscription management | Seeded rows; no admin API |
 | Delivery guarantee on repeated failure | `DeliveryAttempt` row logs the failure; no dead-letter queue, no alerting |
 | Retry | Polly, 2 attempts, fixed backoff — no jitter, no configurable policy per subscription |
-| Trigger | A throwaway diagnostic endpoint, since Phase 21's real publisher doesn't exist yet |
+| Trigger | Real as of Phase 21 — `Mini.AuthorizationService`'s policy-admin endpoint, not a diagnostic one |
 | Acme's signature verification | None — documented gap, see "Delivery signing" above |
 
 ## Things that broke, and why they're worth knowing

@@ -1,12 +1,13 @@
 # Verifies Phase 20: Mini.MessageCenter consumes PolicyChangedEvent off the message bus (Phase 19)
 # and fans it out to webhook subscribers.
 #
-# LIMITATION, documented plainly: nothing in production code publishes PolicyChangedEvent yet — that
-# is Phase 21's job (Mini.AuthorizationService gaining a policy-admin API). So this script triggers
-# delivery through Mini.MessageCenter's own throwaway diagnostic endpoint,
-# POST /api/v1/test/publish-policy-changed, the same way test-phase13.ps1 proved
-# Mini.AuthorizationService worked before Phase 14 wired a real caller into it. That endpoint is
-# documented in Mini.MessageCenter's Program.cs as removable once Phase 21 ships a real publisher.
+# SUPERSEDED, kept rather than deleted per this repo's convention (see CONTEXT.md's "superseded"
+# pattern): §2/§3 below call Mini.MessageCenter's throwaway diagnostic endpoint,
+# POST /api/v1/test/publish-policy-changed, which Phase 21 removed exactly as it said it would once
+# a real publisher existed. This script can no longer run past §1 — it stays as a record of how
+# Phase 20 was verified before Phase 21 shipped. Use test-phase21.ps1 for the real path: a genuine
+# Policy update through Mini.AuthorizationService's new admin API drives the same consumer + webhook
+# fan-out this script used to trigger artificially.
 #
 # Needs a REAL RabbitMQ (Phase 19's dependency) — start everything with .\run-all.ps1 first, which
 # starts RabbitMQ via docker-compose, then Mini.MessageCenter and WebhookReceiverStub. If Docker
