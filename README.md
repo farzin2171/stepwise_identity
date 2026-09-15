@@ -31,7 +31,8 @@ A mini Identity Gateway, built from scratch in phases that mirror
 17. Agent Portal skeleton (a second MVC client, imitating Apply) ✓
 18. Agent Portal calls Mini.AuthorizationService via the shared client ✓
 19. Message bus (MassTransit/RabbitMQ port into Mini.Infrastructure) ✓
-20. Mini.MessageCenter (webhook fan-out) ← next
+20. Mini.MessageCenter (webhook fan-out) ✓
+21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ← next
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -86,6 +87,16 @@ A mini Identity Gateway, built from scratch in phases that mirror
   publish/consume round trip since no consuming service exists yet. This repo's first
   Docker dependency — see `docker-compose.yml` and
   [docs/adr/0001-messaging-transport.md](docs/adr/0001-messaging-transport.md).
+- [src/Mini.MessageCenter](src/Mini.MessageCenter) — Phase 20's consumer of `PolicyChangedEvent`:
+  the first real, cross-process use of Phase 19's message bus. Fans a consumed event out to
+  seeded webhook subscribers, HMAC-signing each delivery and retrying with Polly before giving
+  up. Its own LocalDB database holds the subscriptions and a `DeliveryAttempt` log. No
+  subscription-management API yet — see its [README](src/Mini.MessageCenter/README.md) for
+  what's a genuine port (none of it — see below) and what's this course's own invention.
+- [src/WebhookReceiverStub](src/WebhookReceiverStub) — Phase 20's minimal testing aid, in the
+  `ExternalServicesStub` spirit: one `POST /webhook` endpoint that verifies the HMAC signature
+  and logs the payload, plus `GET /webhook/received` for a test script to poll. Unscoped
+  subscriber, receiving every tenant's events. See its [README](src/WebhookReceiverStub/README.md).
 - [tests/StepwiseIdentity.Tests](tests/StepwiseIdentity.Tests) — the repo's single xunit
   project, added in Phase 11 when the first genuinely branching logic arrived. Decision
   tables only; everything else is verified end to end by a `test-phase*.ps1`.
@@ -103,7 +114,10 @@ also carries
 process proves who it is when there's no user involved, and which one can't be revoked — and
 [connectors.md](docs/architecture/connectors.md), on where a tenant's user data comes from when
 that's decided by rows instead of code, including the finding that a cascading fallback chain
-silently absorbs a broken integration and quietly downgrades a `role` claim while doing it.
+silently absorbs a broken integration and quietly downgrades a `role` claim while doing it. Phase
+20 adds [webhooks.md](docs/architecture/webhooks.md), on the bus → Mini.MessageCenter → webhook-
+subscriber path: HMAC signing, retry, and the same tenant-scoping lesson `connectors.md` already
+teaches, applied to outbound delivery instead of inbound lookup.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -251,6 +265,17 @@ Verification scripts (repo root):
   xunit test that publishes a `PolicyChangedEvent` and confirms a consumer receives it over the
   wire. This phase adds no HTTP surface of its own, so unlike every script above it, it drives
   `dotnet test --filter` rather than raw HTTP.
+- [`test-phase20.ps1`](test-phase20.ps1) — proves Mini.MessageCenter's webhook fan-out, in
+  seven parts: both new services answer `/health`; a `PolicyChangedEvent` for `acme` and one
+  for `globex` are published (via a throwaway diagnostic endpoint — nothing publishes for real
+  until Phase 21, see the limitation documented in the script and in
+  `Mini.MessageCenter/Program.cs`); the unscoped `WebhookReceiverStub` receives **both**; its
+  HMAC-SHA256 signature verification actually passed, re-checked independently by the script
+  rather than trusted from the stub's own answer; Mini.MessageCenter's delivery history shows
+  the acme event reaching 2 subscriptions and the globex event reaching only 1; and Acme's
+  tenant-scoped subscription never receives Globex's event. **Needs a real RabbitMQ** (Phase
+  19's dependency); if `docker info` fails in your environment, this script can't run — the
+  Phase 20 section of `src/Mini.MessageCenter/README.md` says what was verified without it.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

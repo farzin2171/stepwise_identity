@@ -15,8 +15,21 @@ right about the present. Don't "fix" a phase README to match.
 - **[connectors.md](connectors.md)** — where a tenant's user data comes from, decided by rows rather
   than code: the catalog/choice/settings schema, the cascading chain rule, and the finding that a
   cascade silently absorbs misconfiguration.
+- **[webhooks.md](webhooks.md)** — Phase 20's bus → Mini.MessageCenter → webhook-subscriber path:
+  HMAC signing, Polly retry, no dead-letter queue, and tenant-scoped vs. unscoped subscriptions.
 
 Docs that arrive with the phases that need them: `external-role-providers.md` (Phase 14).
+
+**Phase 20 gave Phase 19's message bus its first real consumer.** `Mini.MessageCenter` (:5017)
+subscribes to `PolicyChangedEvent` on the real RabbitMQ instance and fans it out to seeded webhook
+subscribers — `Mini.AcmeApi` (scoped to `acme`) and `WebhookReceiverStub` (:5018, unscoped). No
+production code publishes the event yet (that's Phase 21, `Mini.AuthorizationService`'s policy-admin
+API), so the arrow from `Mini.AuthorizationService` to the bus in the diagram below doesn't exist for
+real — Mini.MessageCenter's own throwaway diagnostic endpoint is what `test-phase20.ps1` uses to
+trigger delivery in the meantime. See [webhooks.md](webhooks.md) for the mechanism and
+[Mini.MessageCenter/README.md](../../src/Mini.MessageCenter/README.md) for what's a genuine gap
+(nothing publishes for real) versus a deliberate simplification (no subscription-management API, no
+DLQ).
 
 **Phase 19 added this repo's first Docker dependency and its first message bus.**
 `docker-compose.yml` at the repo root starts a single RabbitMQ container (`run-all.ps1` now checks
@@ -50,7 +63,9 @@ diagram below.
 | [Mini.AcmeApi](../../src/Mini.AcmeApi) | 5014 | Acme Corporation's **own** user API. The first process here standing in for a system a *tenant* owns, not one the platform owns — a WebApi connector target. |
 | [Mini.AuthorizationService](../../src/Mini.AuthorizationService) | 5015 | Out-of-band authorization decisions (Phase 13), called by SampleApi (Phase 14) and, since Phase 18, AgentPortal too, both via `Mini.Infrastructure`'s shared, resilient `AuthorizationClient` (Phase 16). Own database: per-tenant `Policies` — now covering two independent resources, `sample-api` and (Phase 18) `agent-portal` — and since Phase 15 a persisted `CachedDecisions` table. |
 | [ExternalServicesStub](../../src/ExternalServicesStub) | 5012 | **Superseded** by Mini.UserService in Phase 11. Kept, not started by default. |
-| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). Since Phase 18 also holds `MultiTenant/` — `ITenantContext` and friends, extracted out of MvcClient once AgentPortal became a second, genuine consumer of the identical claims-based resolution. Since Phase 19 also holds `Messaging/` — the MassTransit-based message-bus port (`AddMessageBus`, `PolicyChangedEvent`), with no production publisher or consumer wired to it yet. |
+| [Mini.MessageCenter](../../src/Mini.MessageCenter) | 5017 | Phase 20. Consumes `PolicyChangedEvent` off the real RabbitMQ bus and fans it out to seeded webhook subscribers, HMAC-signing each delivery and retrying with Polly. Own database: `WebhookSubscriptions` and a `DeliveryAttempt` log. No real publisher exists yet — see [webhooks.md](webhooks.md). |
+| [WebhookReceiverStub](../../src/WebhookReceiverStub) | 5018 | Phase 20. Minimal testing aid — one `POST /webhook` endpoint that verifies the HMAC signature and logs the payload, `GET /webhook/received` for polling. Mini.MessageCenter's unscoped subscriber. |
+| [Mini.Infrastructure](../../src/Mini.Infrastructure) | — | Class library. Shared plumbing, extracted in Phase 10; since Phase 16 also the landing spot for a deliberate, need-driven port of pieces of `Libraries.Infrastructure` (starting with the authorization-service client). Since Phase 18 also holds `MultiTenant/` — `ITenantContext` and friends, extracted out of MvcClient once AgentPortal became a second, genuine consumer of the identical claims-based resolution. Since Phase 19 also holds `Messaging/` — the MassTransit-based message-bus port (`AddMessageBus`, `PolicyChangedEvent`), consumed for real for the first time in Phase 20. |
 | [ConfigIngestionTool](../../src/Tools/ConfigIngestionTool) | — | Console tool. Writes config into the database. Run manually. |
 | [StepwiseIdentity.Tests](../../tests/StepwiseIdentity.Tests) | — | The repo's single xunit project. Decision tables only; everything else is a `test-phase*.ps1`. |
 

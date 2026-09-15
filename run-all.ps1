@@ -56,6 +56,17 @@ $services = @(
     # Phase 17. A SECOND MVC client, imitating Applications.Apply, with its own client registration
     # ("agentportal") on the same IdentityServerHost. Not yet on any other project's dependency path.
     @{ Name = "AgentPortal";        Project = "src/AgentPortal";        Url = "https://localhost:5016" }
+    # Phase 20. The webhook-receiver stub is started BEFORE Mini.MessageCenter below so that when a
+    # webhook fires, its unscoped subscription's callback URL is already listening — same ordering
+    # concern as Mini.AcmeApi needing to be up before a login exercises its connector. It is in the
+    # default set (not gated behind a flag, unlike ExternalServicesStub) because test-phase20.ps1
+    # depends on it to prove delivery, and it isn't superseding anything.
+    @{ Name = "WebhookReceiverStub"; Project = "src/WebhookReceiverStub"; Url = "https://localhost:5018" }
+    # Phase 20. Consumes PolicyChangedEvent off the message bus (Phase 19) and fans it out to
+    # webhook subscribers. No real publisher exists until Phase 21 — see this service's README — so
+    # it is on no other project's login/dependency path yet, started here only so
+    # test-phase20.ps1 can exercise it.
+    @{ Name = "Mini.MessageCenter"; Project = "src/Mini.MessageCenter"; Url = "https://localhost:5017" }
 )
 
 if ($IncludeStub) {

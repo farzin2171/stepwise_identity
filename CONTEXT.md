@@ -476,40 +476,59 @@ don't assume the tenant filter or an event-helper wrapper exist yet — they don
 The domain event `Mini.AuthorizationService` will publish (starting Phase 21) on the message bus
 when a `Policy` row is edited (`TenantKey`, `ResourceName`, old/new `Condition`, `ChangedAtUtc`).
 Lives in `Mini.Infrastructure/Messaging/` as of Phase 19 — defined and proven to round-trip over both
-MassTransit's in-memory test harness and a real RabbitMQ instance (`test-phase19.ps1`), but nothing
-publishes or consumes it in production code yet; `PolicyChangedEventConsumer` in
-`tests/StepwiseIdentity.Tests` exists purely to prove the wire format works; Mini.AuthorizationService
-(the real publisher) and Mini.MessageCenter (the real consumer) both arrive later. Deliberately a
+MassTransit's in-memory test harness and a real RabbitMQ instance (`test-phase19.ps1`). As of Phase
+20, `Mini.MessageCenter` is a real, production consumer of it (`Messaging/PolicyChangedEventConsumer.cs`);
+`Mini.AuthorizationService`, the real publisher, still doesn't call `Publish` anywhere — that's
+Phase 21. The `PolicyChangedEventConsumer` in `tests/StepwiseIdentity.Tests` still exists too,
+unchanged, purely to prove the wire format works without needing a running service. Deliberately a
 named, domain-specific event rather than the real library's generic `EntityUpdatedEvent` envelope —
 chosen so `Mini.MessageCenter` doesn't need to know `EntityType == "Policy"` means something.
 _Avoid_: confusing with `CachedDecision`, which is an authorization *answer*, not a change
 notification. And don't read its Phase 19 existence as "policy changes are already wired to the
 bus" — nothing calls `Publish` outside a test yet.
 
-**Mini.MessageCenter** (planned):
-A new service that consumes `PolicyChangedEvent` off the message bus and fans it out to webhook
-subscribers. Its name follows this repo's `Mini.X` convention (like `Mini.UserService`,
-`Mini.AuthorizationService`), even though the real service it's loosely inspired by is named
-`Services.MessageCenter` in production.
+**Mini.MessageCenter**:
+Phase 20's service (`:5017`) that consumes `PolicyChangedEvent` off the real RabbitMQ bus and fans
+it out to webhook subscribers. Its name follows this repo's `Mini.X` convention (like
+`Mini.UserService`, `Mini.AuthorizationService`), even though the real service it's loosely inspired
+by is named `Services.MessageCenter` in production. The first real, cross-process consumer of Phase
+19's `AddMessageBus` — until this phase, only the same-process test harness and `test-phase19.ps1`
+had ever used it.
 
 **Its webhook system has no real counterpart to port.** Both `Libraries.Infrastructure` and the real
 `Services.MessageCenter` were checked directly: neither has a subscription model, HMAC signing, or
 delivery-retry logic. The real `Services.MessageCenter` calls `Services.Notifications` via a plain,
 synchronous, unsigned, fire-once HTTP POST — nothing like a webhook fan-out. So `Mini.MessageCenter`'s
-webhook design is this course's own invention, not a port, and its README says so plainly rather than
-implying otherwise.
-_Avoid_: calling it "a port of Services.MessageCenter" unqualified — only the *name* and the general
-shape ("a service downstream services notify") come from there; the webhook mechanism is new.
+webhook design is this course's own invention, not a port. See
+[`src/Mini.MessageCenter/README.md`](src/Mini.MessageCenter/README.md) and
+[`docs/architecture/webhooks.md`](docs/architecture/webhooks.md).
 
-**Webhook subscription** (planned):
-A seeded row in `Mini.MessageCenter` naming a receiver: callback URL, a shared HMAC secret, and
-(for `Mini.AcmeApi`'s subscription only) a `TenantKey` scope — mirroring the "which tenant does this
-route to" lesson `Connector` already teaches. The generic stub receiver's subscription is
-unscoped, receiving every tenant's events. Seeded as rows at this phase, the same way
+**No real publisher exists yet, on purpose.** `Mini.AuthorizationService` doesn't publish
+`PolicyChangedEvent` until Phase 21 (its policy-admin API). Phase 20 proves the consumer and
+delivery path work via a throwaway diagnostic endpoint,
+`POST /api/v1/test/publish-policy-changed`, documented as removable once Phase 21 ships.
+_Avoid_: calling it "a port of Services.MessageCenter" unqualified — only the *name* and the general
+shape ("a service downstream services notify") come from there; the webhook mechanism is new. And
+don't assume a real trigger exists yet — see the diagnostic-endpoint caveat above.
+
+**Webhook subscription**:
+A seeded row in `Mini.MessageCenter`'s own database naming a receiver: callback URL, a shared HMAC
+secret, and a nullable `TenantKey` scope (`null` = unscoped, every tenant's events). Two are seeded:
+`Mini.AcmeApi`'s (`:5014`, scoped to `acme`) and a new `WebhookReceiverStub` (`:5018`, unscoped) —
+mirroring the "which tenant does this route to" lesson `Connector` already teaches, via
+`WebhookSubscriptionMatcher.Matches`, table-tested in
+`tests/StepwiseIdentity.Tests/WebhookSubscriptionMatcherTests.cs`. Seeded as rows, the same way
 `Mini.AuthorizationService`'s own policies were seeded before any admin API existed for them — a
 subscription-management API is explicitly future work, not part of this phase.
 _Avoid_: "webhook endpoint" alone — say subscription when meaning the stored row, delivery when
-meaning one outbound attempt.
+meaning one outbound attempt (a `DeliveryAttempt` row in `Mini.MessageCenter`'s database).
+
+**WebhookReceiverStub**:
+Phase 20's minimal testing aid (`:5018`), in the same spirit as `ExternalServicesStub`: a single
+`POST /webhook` endpoint that verifies a delivery's HMAC-SHA256 signature and logs it, plus
+`GET /webhook/received` for a test script to poll. `Mini.MessageCenter`'s unscoped subscriber — the
+only receiver in this phase that actually checks a signature (`Mini.AcmeApi`'s webhook endpoint
+does not; see its README's Phase 20 addition for why that's a documented gap, not an oversight).
 
 **PolicyChangeRequest** (planned):
 An audit-trail row in Agent Portal's own new database: who (the signed-in agent's `sub`) changed

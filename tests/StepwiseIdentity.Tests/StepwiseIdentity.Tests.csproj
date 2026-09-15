@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\Mini.Infrastructure\Mini.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Mini.UserService\Mini.UserService.csproj" />
     <ProjectReference Include="..\..\src\Mini.AuthorizationService\Mini.AuthorizationService.csproj" />
+    <ProjectReference Include="..\..\src\Mini.MessageCenter\Mini.MessageCenter.csproj" />
   </ItemGroup>
 
   <ItemGroup>

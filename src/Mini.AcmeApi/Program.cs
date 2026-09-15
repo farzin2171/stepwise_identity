@@ -100,6 +100,21 @@ protectedApi.MapGet("/by-email/{email}", (string email) =>
         : Results.Ok(new { user.UserId, user.DisplayName, user.Email, user.Role });
 });
 
+// Phase 20: Acme's inbound webhook receiver for Mini.MessageCenter's acme-scoped subscription. Left
+// UNAUTHENTICATED and UNVERIFIED on purpose - this file already carries none of this repo's platform
+// conventions (see the file banner above), and touching it to add HMAC verification would suggest
+// Acme's own system participates in that mechanism, which it doesn't in this sample. This IS a real
+// gap worth naming plainly: nothing stops an arbitrary caller from POSTing a fake policy-changed
+// payload here. Mini.MessageCenter signs every delivery anyway (see its README's "Delivery signing"
+// section) so the mechanism exists; Acme's stand-in simply doesn't check it, unlike
+// WebhookReceiverStub, which does.
+app.MapPost("/webhooks/policy-changed", (HttpContext ctx, ILogger<Program> logger) =>
+{
+    var signature = ctx.Request.Headers["X-Webhook-Signature"].FirstOrDefault();
+    logger.LogInformation("Acme received a policy-changed webhook (signature present: {HasSignature}).", signature is not null);
+    return Results.Ok(new { received = true });
+});
+
 // Unauthenticated liveness probe, so run-all.ps1 can tell "listening and finished starting" from
 // "port is open but still warming up." Same shape as every other /health in this repo.
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
