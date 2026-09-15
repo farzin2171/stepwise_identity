@@ -10,8 +10,9 @@ An authorization service (`:5015`) that **IdentityServerHost** and **SampleApi**
 15. (persist authorization decisions across restarts) ✓
 ...
 20. Mini.MessageCenter (webhook fan-out) ✓
-21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ← this project
-22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI (next)
+21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
+22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ✓
+23. Closing/hardening phase for the 19-22 arc — the policy-admin API's tenant-match gap closes ✓
 ```
 
 Until now, authorization has been embedded in tokens at issuance time — the `role` claim added by `SampleProfileService` lives *inside* the JWT for its lifetime. That works well for static, immutable decisions made at login. For decisions that need to change without reissuing tokens, or policies that are too expensive to recompute for every API call, or policies that need context beyond what fits in a claim, a service-of-services pattern emerges: the API calls back to a policy-evaluation service, sends the current caller's identity, and asks "am I authorized for this?"
@@ -324,11 +325,92 @@ Prove Phase 21's real publish, with a real RabbitMQ running (`.\run-all.ps1`):
    `DeliveryAttempt` row exists for this exact change, proving the publish reached the bus and the
    consumer for real.
 
+## Phase 23 — closing the tenant-match gap, leaving the ordering gap alone
+
+Phase 21 shipped the policy-admin API with two named, unfixed gaps. Phase 23 (the arc's closing
+phase) revisits both rather than letting them age silently into "that's just how it works":
+
+**Gap (a), tenant-match, is now closed.** `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}`
+now rejects a `User`-identity caller whose own `identity.TenantKey` doesn't match the route's
+`{tenantKey}`, with `403 Forbidden` — before touching the database or the bus:
+
+```csharp
+if (identity.IdentityType == IdentityType.User && identity.TenantKey != tenantKey)
+{
+    return Results.Problem(
+        statusCode: StatusCodes.Status403Forbidden,
+        title: "Forbidden",
+        detail: $"Caller's tenant does not match route tenant '{tenantKey}'.");
+}
+```
+
+A `Service`-identity caller (a `userservice-svc.{tenant}` client, or anything else authenticating with
+`client_id`/no `sub`) is deliberately exempt — the same "tenant-less service caller" pattern
+`CONTEXT.md`'s `Service account` entry already documents for `userservice-mgmt-svc`. This endpoint has
+no genuine service caller of its own today (`test-phase21.ps1`'s `userservice-svc.acme` calls it purely
+as a convenient client-credentials token, not because a service SHOULD be able to write any tenant's
+policy), so narrowing the exemption further was left alone rather than guessed at. `test-phase23.ps1`
+proves both directions: a `globex` user's token gets 403 against `acme`'s policy, and the SAME user can
+still write `globex`'s own policy. `IdentityContextTests.cs`-style unit coverage wasn't needed here — this
+is a one-line boolean gate on data the identity/route already carry, not a decision table; `test-phase23.ps1`
+exercises the positive and negative case more legibly than an EF-InMemory unit test would.
+
+This closes the second-to-last bullet under "What's deliberately missing" below, and the corresponding
+`CONTEXT.md` `Mini.AuthorizationService` entry — see that file for the updated wording.
+
+**Gap (b), publish-before-commit ordering, is left exactly as it was.** Reordering
+`db.SaveChanges()` and `await publishEndpoint.Publish(...)` (or adding a broker health-check before the
+commit) was considered and rejected for this phase, for three reasons found by actually reading the
+handler rather than assumed:
+
+1. **Simple reordering (publish first, commit second) trades one bug for a worse one.** If the publish
+   succeeds but the subsequent `SaveChanges()` throws (a constraint violation, a transient DB blip), a
+   `PolicyChangedEvent` goes out for a write that never happened — every downstream consumer
+   (`Mini.MessageCenter`, its webhook subscribers) now believes a change occurred that the source of
+   truth doesn't have. The current bug (write lands, notification is late/never confirmed to the
+   caller) is a *stale-caller-status* problem; the swapped order would be a *phantom-event* problem —
+   arguably worse, because nothing downstream has a way to detect and correct it.
+2. **A broker health-check before committing doesn't remove the race, it just moves it.** A check-then-
+   commit-then-publish sequence still has a window between the check succeeding and the publish actually
+   landing where the same failure mode as today can recur (the broker can drop between the check and the
+   real publish) — it would narrow the window, not close it, at the cost of a new synchronous dependency
+   on the broker's availability for every write.
+3. **The right fix is a different pattern (transactional outbox), not a reordering** — write the event to
+   an outbox table in the SAME transaction as the `Policy` row, then a separate background dispatcher
+   publishes from the outbox with at-least-once delivery and retries. `CONTEXT.md`'s `Message bus` entry
+   already notes this sample's port has "no outbox pattern," confirmed against the real library too —
+   building one now would be a bigger, riskier change than this closing phase's mandate, and it deserves
+   its own phase (with its own idempotency-on-the-consumer-side story) rather than a rushed fix bolted
+   onto phase 23.
+
+So gap (b) stays open, exactly as `CONTEXT.md`'s `PolicyChangeRequest` entry and this project's own
+Phase 21 section already describe it — `PolicyChangeRequest.Outcome` (AgentPortal's audit row) still
+means "did AgentPortal's own HTTP call succeed," never "did the write happen." `test-phase23.ps1`
+observed this gap firsthand while being built: a direct script PUT that passes the (new) tenant check
+still hangs against Mini.AuthorizationService itself with no reachable broker, because nothing server-side
+bounds that `await` — only AgentPortal's own client has ever had a timeout for this. That is the same
+finding Phase 22 already made from AgentPortal's side, now confirmed independently from a raw script
+calling the admin endpoint directly.
+
+### What Phase 23 verified, and what it couldn't
+
+Docker Desktop's engine was unreachable in this phase's own sandbox too (`docker info` fails the same
+way in every prior phase, 19 through 22) — so, exactly like those phases, the live
+RabbitMQ → `Mini.MessageCenter` → webhook path (including the cross-tenant webhook-leak check
+`test-phase23.ps1` §8-9 are written to run) remains unverified end-to-end by an actual run in this
+environment. What WAS verified by actually running things, with all relevant hosts started by hand
+(no Docker, so `run-all.ps1` itself can't be used — see its own hard `docker info` check):
+`dotnet build` across the whole solution, `dotnet test` (72/73 passing — the one `[RequiresRabbitMQ]`-shaped
+failure is the same pre-existing one Phases 19-22 report), and `test-phase23.ps1`'s entire
+"VERIFIED NOW" section — the tenant-match fix in both directions, the AgentPortal edit flow unaffected,
+and the audit row landing — plus a regression pass across `test-phase13.ps1`, `test-phase14.ps1`,
+`test-phase18.ps1`, and `test-phase22.ps1`, all green.
+
 ## What's deliberately missing (and why)
 
 - **Redis, or any cache that isn't the primary database.** Phase 15's `CachedDecisions` cache lives in the same SQL Server database as `Policies` — cheaper to run for a teaching sample, but it means a cache read and a cache write both cost a database round trip. The real `Services.Authorization` keeps its cache in Redis specifically to avoid that.
 - **Policy evaluation beyond role-checking.** The schema supports a generic `Condition` JSON column, and `Policy.EvaluatePolicy` has a stub for `"Claim"` types, but neither is wired up. Adding them is a matter of time, not architecture.
 - **`IAuthorizationPolicyProvider` from Duende IdentityServer.** That's a different pattern entirely — resolving policies *inside the token middleware* based on a resource name. Real `Services.Authorization` does that; this sample doesn't.
-- **A role/permission gate on the policy-admin API (Phase 21).** `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` requires authentication but accepts any authenticated caller — user or service account, any tenant, any role. This is the deliberate open-editing decision from this arc's design session (Q7), documented here rather than fixed, the same way `IIdentityContext`'s "two callers look identical" gap is documented rather than fixed elsewhere in this repo. Worth closing before this endpoint is ever reachable from something less controlled than a `test-*.ps1` script or a trusted internal caller.
+- **A role/permission gate on the policy-admin API (Phase 21).** `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` requires authentication but accepts any authenticated caller of the RIGHT tenant — user or service account, any role. This is the deliberate open-editing decision from this arc's design session (Q7), documented here rather than fixed, the same way `IIdentityContext`'s "two callers look identical" gap is documented rather than fixed elsewhere in this repo. Worth closing before this endpoint is ever reachable from something less controlled than a `test-*.ps1` script or a trusted internal caller. **Distinct from tenant-match below, which IS now fixed** — this bullet is about privilege WITHIN a tenant (any signed-in Acme user, not just an Acme admin), not about crossing tenants.
 - **A create-vs-update distinction on the policy-admin API.** It always upserts; there's no way to ask for "update only, 404 if missing" or "create only, 409 if it exists." Simplest option, not the only one.
-- **Delivery-side scoping on who can trigger which tenant's webhook.** Because the admin API has no tenant restriction on the caller, a caller authenticated for one tenant can publish a `PolicyChangedEvent` for a *different* tenant's policy — nothing here checks that `identity.TenantKey` matches the `tenantKey` in the route. Surfaced while writing this section, not by a failing test; worth fixing alongside the role gate above.
+- **The publish-before-commit ordering gap (Phase 21's gap (b)).** `db.SaveChanges()` still runs before `await publishEndpoint.Publish(...)`, so a write can land in the database while the HTTP caller never gets a confirmed response if the broker is unreachable. Deliberately left alone in Phase 23 — see that phase's section above for the three reasons a quick reorder was rejected in favor of a future transactional-outbox phase.

@@ -23,6 +23,7 @@
 20. Mini.MessageCenter (webhook fan-out) ✓
 21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
 22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ✓
+23. Closing/hardening phase for the 19-22 arc — the policy-admin API's tenant-match gap closes ✓
 ```
 
 ## Why this phase
@@ -647,3 +648,20 @@ Prefer not to click through a browser? [`test-phase22.ps1`](../../test-phase22.p
 the whole thing over raw HTTP: AgentPortal login (regression), the edit page showing the current
 condition, a submitted edit recorded in `AgentPortalDb` either way, and the audit history page
 rendering it — adapting its assertions to whether RabbitMQ is actually reachable in your environment.
+
+## Phase 23 update — the tenant-match gap named above is now closed (in Mini.AuthorizationService, not here)
+
+This project's own Phase 22 section above (both "Why this phase" and "What's deliberately missing")
+names Phase 21's tenant-match gap as "still open" and "Phase 23's kind of work, if it ever becomes
+one." It became one: see `src/Mini.AuthorizationService/README.md`'s Phase 23 section for the fix
+itself — a `User`-identity caller whose own tenant doesn't match the route's `{tenantKey}` on
+`PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` now gets `403`, not a silent write to
+someone else's tenant. Nothing in THIS project changed to get that fix, on purpose: `PolicyController`
+already only ever sent the caller's own resolved tenant key (Phase 22's "scope decision," unchanged),
+so the fix landed entirely on the admin endpoint's own side, and `test-phase23.ps1` confirms
+`PolicyController`'s legitimate same-tenant edit flow still works after it. The narrative above (Phase
+22's own "Why this phase" and "what's deliberately missing" text) is left exactly as written, per this
+repo's rule that a phase README describes what it looked like *then* — this note exists so a reader of
+THIS file doesn't have to cross-reference `CONTEXT.md` to learn the gap it names is no longer current.
+The OTHER Phase 21 gap this section names — publish-before-respond ordering — is still open; see the
+same Mini.AuthorizationService Phase 23 section for why it was deliberately left alone.

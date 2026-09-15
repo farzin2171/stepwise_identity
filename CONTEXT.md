@@ -434,8 +434,13 @@ SampleApi's `/authorize/{resourceName}` endpoint, called per-request rather than
 made it a real publisher**: `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` upserts a
 `Policy` row's `Condition`, clears the `CachedDecisions` rows that depended on it, and publishes a real
 `PolicyChangedEvent` onto the bus — see `PolicyChangedEvent` below. Editing is open to any authenticated
-caller on purpose (no role gate), the same "two callers look identical" gap `IIdentityContext` already
-documents elsewhere. See [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md).
+caller *of the matching tenant* on purpose (no role gate) — the same "two callers look identical" gap
+`IIdentityContext` already documents elsewhere, now narrower than it was. **Phase 23 closed this
+endpoint's other documented gap**: a `User`-identity caller whose own tenant doesn't match the route's
+`{tenantKey}` now gets `403 Forbidden` instead of a silent cross-tenant write. A `Service`-identity
+caller stays exempt — no genuine service caller of this endpoint exists yet to test a narrower rule
+against. See [`src/Mini.AuthorizationService/README.md`](src/Mini.AuthorizationService/README.md)'s
+Phase 23 section.
 
 **Agent Portal**:
 Phase 17's `src/AgentPortal` — a second server-side MVC client, imitating `Applications.Apply`, with
@@ -458,11 +463,13 @@ and a real feature surface: a `PolicyController` where a signed-in agent can vie
 resource — see `src/AgentPortal/README.md`'s Phase 22 "scope decision" for why that stayed narrow), then
 logs the attempt as a `PolicyChangeRequest` (see that entry). It calls Mini.AuthorizationService's Phase
 21 admin endpoint with the signed-in user's own forwarded access token — no new client registration, no
-new scope, since the `agentportal` client already requested `api1` in Phase 18. This is also the first
-phase to make Phase 21's documented, unfixed tenant-match gap (the PUT endpoint never checks the
-caller's tenant against the route's `{tenantKey}`) reachable from a real UI, not just a raw HTTP script
-— this controller always sends the caller's own resolved tenant key, so it never triggers the gap
-itself, but nothing in the path defends against a caller that would.
+new scope, since the `agentportal` client already requested `api1` in Phase 18. This was also the first
+phase to make Phase 21's tenant-match gap (the PUT endpoint didn't check the caller's tenant against
+the route's `{tenantKey}`) reachable from a real UI, not just a raw HTTP script — this controller
+always sends the caller's own resolved tenant key, so it never triggered the gap itself, but nothing
+in the path defended against a caller that would. **Phase 23 closed that gap on the endpoint's own
+side** — see `PolicyChangedEvent`/`Mini.AuthorizationService` entries above — without any change to
+this controller, since it never needed to send anything but its own tenant.
 _Avoid_: assuming "Agent Portal" names a real Equisoft product — it doesn't.
 
 **Message bus**:
@@ -573,8 +580,13 @@ server while the client-side `HttpClient` call still times out (see AgentPortal'
 comment on why that timeout is now an explicit 15s instead of the framework default 100s). A
 `PolicyChangeRequest` row can therefore say `"Failed"` for a change that, underneath, actually
 succeeded. Reproduced without RabbitMQ running: see `src/AgentPortal/README.md`'s Phase 22 "Things
-that broke" section for the exact sequence. Not fixed in Phase 22 — fixing it would mean changing
-Mini.AuthorizationService's own response ordering (Phase 21's design), which is out of this phase's scope.
+that broke" section for the exact sequence. **Still not fixed as of Phase 23** — that phase considered
+and deliberately rejected reordering `SaveChanges`/`Publish` (see
+`src/Mini.AuthorizationService/README.md`'s Phase 23 section for the three reasons, including "the
+right fix is a transactional outbox, not a reorder") — fixing it properly is its own future phase, not
+a quick swap. This is a SEPARATE gap from the tenant-match one Phase 23 DID close (see
+`Mini.AuthorizationService` above) — don't conflate the two: one is "who can write," now fixed; this
+one is "does a failed-looking write always fail," still open.
 _Avoid_: treating this as the source of truth for a policy's current state — it never is. And don't
 read a `"Failed"` row as proof the write didn't happen — see the gap above.
 

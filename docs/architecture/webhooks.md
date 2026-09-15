@@ -72,8 +72,11 @@ just that a POST arrived. `Mini.AcmeApi` does **not** verify it: that file alrea
 this repo's platform conventions on purpose (see its own file banner — it's a stand-in for a
 system a *tenant* owns), and adding verification there would suggest Acme's system participates in
 a mechanism it has no reason to know about. This is a real, named gap: nothing currently stops an
-arbitrary caller from POSTing a fake payload to Acme's endpoint. Worth fixing if this arc continues
-past Phase 23, not fixed here.
+arbitrary caller from POSTing a fake payload to Acme's endpoint. Phase 23 (the arc's closing phase)
+looked at this again and left it exactly as-is, for the same reason it was never fixed: touching
+`Mini.AcmeApi`'s webhook endpoint to add signature verification would mean giving a file that
+deliberately carries none of this repo's platform conventions one anyway. Worth fixing if a future
+phase revisits Acme's stand-in service specifically, not fixed here.
 
 ## Retry and failure
 

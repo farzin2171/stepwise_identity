@@ -34,7 +34,7 @@ A mini Identity Gateway, built from scratch in phases that mirror
 20. Mini.MessageCenter (webhook fan-out) ✓
 21. Mini.AuthorizationService gains a policy-admin API and publishes PolicyChangedEvent ✓
 22. AgentPortal gets its own database (PolicyChangeRequest audit trail) and a policy-edit UI ✓
-23. End-to-end wiring / final regression across the whole messaging arc ← next
+23. Closing/hardening phase for the 19-22 messaging arc — the policy-admin API's tenant-match gap closes ✓
 ```
 
 - [src/IdentityServerHost](src/IdentityServerHost) — the authorization server. See its
@@ -139,6 +139,14 @@ diagnostic endpoint. Phase 22 updated
 the state table, AgentPortal as a second real caller of the policy-admin endpoint (forwarding the
 signed-in user's own token, same as its existing `agent-portal` authorization check), and a note that
 Phase 21's documented tenant-match gap is now reachable from a real UI, not just a raw HTTP script.
+Phase 23, the arc's closing phase, updated both `docs/architecture/README.md` and
+[webhooks.md](docs/architecture/webhooks.md) one more time: the tenant-match gap is now closed (a
+`User`-identity caller whose own tenant doesn't match the route gets `403`), the publish-before-commit
+ordering gap is documented as deliberately still open (a same-phase reorder was considered and rejected
+— see `Mini.AuthorizationService/README.md`'s Phase 23 section for why), and the live RabbitMQ →
+Mini.MessageCenter → webhook path — including whether a `globex` change ever leaks to `Mini.AcmeApi`'s
+`acme`-scoped subscription — remains this arc's one unverified end-to-end claim, since Docker Desktop's
+engine was unreachable in this phase's sandbox too, the same as Phases 19-22.
 
 External providers are now config-driven — a first step toward how
 `Applications.IdentityGateway` actually does it, ported into
@@ -324,6 +332,19 @@ Verification scripts (repo root):
   finding (the write can actually still succeed server-side even when the client sees `Failed` — a real,
   documented gap, not fixed in this phase). Either way, the live bus → Mini.MessageCenter → webhook path
   needs a human with Docker Desktop to additionally confirm, same as Phases 19-21.
+- [`test-phase23.ps1`](test-phase23.ps1) — the arc's closing verification. Splits its output into what
+  actually ran ("VERIFIED NOW") versus what still needs a real broker ("REQUIRES DOCKER/RABBITMQ").
+  Verified in every environment: all core services healthy; AgentPortal's login + same-tenant policy
+  edit still work after this phase's fix; the `PolicyChangeRequest` audit row lands either way; a
+  `globex` user's real token gets `403` attempting to write `acme`'s policy (Phase 21's tenant-match gap,
+  now closed); the SAME user can still write `globex`'s own policy (the fix isn't a blanket lockout); and
+  a `Service`-identity caller stays exempt from the check on purpose. It also observes Phase 21's OTHER
+  gap firsthand — a same-tenant PUT that passes the new check still hangs against
+  Mini.AuthorizationService with no broker reachable, because nothing server-side bounds that `await`.
+  Needs a real RabbitMQ for its remaining two sections (full bus fan-out to both webhook subscriptions,
+  and a `globex`-tenant leak check against Acme's scoped subscription) — see
+  `src/Mini.AuthorizationService/README.md`'s Phase 23 section for what those two sections would prove
+  and why they haven't run in any sandbox across Phases 19-23 yet.
 
 Plus one xunit project, [`tests/StepwiseIdentity.Tests`](tests/StepwiseIdentity.Tests)
 (`dotnet test`), added in Phase 11 for the decision tables a black-box HTTP script would

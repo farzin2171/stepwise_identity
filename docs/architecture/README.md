@@ -1,6 +1,6 @@
 # Architecture
 
-**Current state of the system**, as of Phase 22. Cross-cutting docs live here — anything
+**Current state of the system**, as of Phase 23. Cross-cutting docs live here — anything
 that names more than one of this repo's projects.
 
 This is deliberately *not* a phase narrative. The per-project READMEs tell the story
@@ -54,15 +54,27 @@ diagram below.
 (not the shared `Mini.Infrastructure` one — see `AgentPortal/README.md`'s Phase 22 section for why it
 stayed local) that reads the current `agent-portal` policy for the caller's own tenant and, on submit,
 calls Phase 21's `PUT /api/v1/authorization/policies/{tenantKey}/{resourceName}` — same forwarded
-user-token pattern as the existing authorization check. This is the first phase to make Phase 21's
-documented, unfixed gap (the PUT endpoint never checks the caller's own tenant against the route's
+user-token pattern as the existing authorization check. This was the first phase to make Phase 21's
+tenant-match gap (the PUT endpoint didn't check the caller's own tenant against the route's
 `{tenantKey}`) reachable from a real UI instead of only a raw HTTP script — AgentPortal's controller
-always sends the caller's own resolved tenant key, so it never triggers the gap itself, but nothing on
-either side of the call defends against a request that would. It also surfaced a genuine ordering bug in
+always sends the caller's own resolved tenant key, so it never triggered the gap itself, but nothing on
+either side of the call defended against a request that would. It also surfaced a genuine ordering bug in
 Phase 21's own endpoint: `db.SaveChanges()` runs BEFORE `await publishEndpoint.Publish(...)`, so with an
 unreachable message broker the write can succeed on the server while the caller's HTTP request times out
 — see `AgentPortal/README.md`'s Phase 22 "Things that broke" and `CONTEXT.md`'s `PolicyChangeRequest`
 entry for the reproduction.
+
+**Phase 23 closed the first of those two gaps, and deliberately left the second.** The PUT endpoint now
+rejects a `User`-identity caller whose own tenant doesn't match the route's `{tenantKey}` with `403`
+(a `Service`-identity caller stays exempt — see `Mini.AuthorizationService/README.md`'s Phase 23
+section). The `SaveChanges`-before-`Publish` ordering bug was considered and left alone: a straight
+reorder trades a "write landed, caller's status is stale" bug for a worse "event published, write never
+landed" bug, and the actually-correct fix (a transactional outbox) is its own future phase, not a
+same-phase patch. Phase 23 also could not run the live RabbitMQ → `Mini.MessageCenter` → webhook path in
+its own sandbox — Docker Desktop's engine has been unreachable across Phases 19-23 alike — so that path,
+including whether a `globex`-tenant change ever reaches `Mini.AcmeApi`'s `acme`-scoped webhook
+subscription, remains this arc's one unverified end-to-end claim. `test-phase23.ps1` is written to prove
+it the moment a human runs it with Docker Desktop up.
 
 ## The processes
 

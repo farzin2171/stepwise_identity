@@ -148,13 +148,32 @@ api.MapGet("/policies", (AuthorizationDbContext db, IIdentityContext identity) =
 // accounts or a specific role (design decision, see this project's README "Where this sample
 // simplifies") - the same open-editing posture SampleApi's IIdentityContext already documents as a
 // gap (two callers with different privilege look identical to a claims-only check).
+//
+// Phase 23 closed the OTHER gap this endpoint used to have: nothing checked the caller's own
+// tenant against the route's {tenantKey}, so a user token from one tenant could edit a different
+// tenant's policy. A User identity's TenantKey now has to match the route or the call is refused
+// with 403, the same status/shape ServiceAccountOnlyFilter above already uses for a mismatched
+// caller. A Service identity is deliberately exempt - IIdentityType.Service already means
+// "cross-tenant by design" elsewhere in this repo (see CONTEXT.md's "Service account" entry: the
+// tenant-less userservice-mgmt-svc client exists precisely because some service callers act across
+// every tenant), and this endpoint has no service caller today to prove or disprove that stance
+// against - narrowing it further is left for whenever a real service caller shows up.
 api.MapPut("/policies/{tenantKey}/{resourceName}", async (
     string tenantKey,
     string resourceName,
     UpdatePolicyRequest request,
     AuthorizationDbContext db,
-    IPublishEndpoint publishEndpoint) =>
+    IPublishEndpoint publishEndpoint,
+    IIdentityContext identity) =>
 {
+    if (!PolicyAdminTenantGate.IsAllowed(identity.IdentityType, identity.TenantKey, tenantKey))
+    {
+        return Results.Problem(
+            statusCode: StatusCodes.Status403Forbidden,
+            title: "Forbidden",
+            detail: $"Caller's tenant does not match route tenant '{tenantKey}'.");
+    }
+
     var existing = db.Policies.SingleOrDefault(p => p.TenantKey == tenantKey && p.ResourceName == resourceName);
     var oldCondition = existing?.Condition;
     var changedAtUtc = DateTimeOffset.UtcNow;
